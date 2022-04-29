@@ -39,6 +39,9 @@ impl TryFrom<u32> for Keysym {
     type Error = anyhow::Error;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
+        const XK_F1: u32 = 0xffbe;
+        const XK_F12: u32 = 0xffc9;
+
         match value {
             0xff08 => Ok(Backspace),
             0xff09 => Ok(Tab),
@@ -54,8 +57,8 @@ impl TryFrom<u32> for Keysym {
             0xff52 => Ok(Up),
             0xff53 => Ok(Right),
             0xff54 => Ok(Down),
-            f if (f >= 0xffbe && f <= 0xffc9) => {
-                let n = f - 0xffbf + 1;
+            f if (f >= XK_F1 && f <= XK_F12) => {
+                let n = f - XK_F1 + 1;
                 // TODO: handle cast
                 Ok(FunctionKey(n as u8))
             }
