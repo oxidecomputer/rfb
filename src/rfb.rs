@@ -11,8 +11,9 @@ use futures::FutureExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::encodings::{Encoding, EncodingType, RawEncoding};
+use crate::encodings::{Encoding, EncodingType};
 use crate::keysym::Keysym;
+use crate::pixel_formats::rgb_888;
 
 pub trait ReadMessage {
     fn read_from<'a>(stream: &'a mut TcpStream) -> BoxFuture<'a, Result<Self>>
@@ -170,10 +171,10 @@ pub struct ServerInit {
 }
 
 impl ServerInit {
-    pub fn new(width: u16, height: u16, name: String) -> Self {
+    pub fn new(width: u16, height: u16, name: String, pixel_format: PixelFormat) -> Self {
         Self {
             initial_res: Resolution { width, height },
-            pixel_format: PixelFormat::default(),
+            pixel_format,
             name,
         }
     }
@@ -210,17 +211,19 @@ impl FramebufferUpdate {
     pub fn new(rectangles: Vec<Rectangle>) -> Self {
         FramebufferUpdate { rectangles }
     }
-}
 
-impl Default for FramebufferUpdate {
-    fn default() -> Self {
-        Self {
-            rectangles: vec![Rectangle::default()],
+    pub fn transform(&self, input_pf: &PixelFormat, output_pf: &PixelFormat) -> Self {
+        let mut rectangles = Vec::new();
+
+        for r in self.rectangles.iter() {
+            rectangles.push(r.transform(input_pf, output_pf));
         }
+
+        FramebufferUpdate { rectangles }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct Position {
     x: u16,
     y: u16,
@@ -238,7 +241,7 @@ impl ReadMessage for Position {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct Resolution {
     width: u16,
     height: u16,
@@ -281,17 +284,12 @@ impl Rectangle {
             data,
         }
     }
-}
 
-impl Default for Rectangle {
-    fn default() -> Self {
-        Self {
-            position: Position { x: 0, y: 0 },
-            dimensions: Resolution {
-                width: 1024,
-                height: 768,
-            },
-            data: Box::new(RawEncoding::new(vec![0xff; 1024 * 768])),
+    pub fn transform(&self, input_pf: &PixelFormat, output_pf: &PixelFormat) -> Self {
+        Rectangle {
+            position: self.position,
+            dimensions: self.dimensions,
+            data: self.data.transform(input_pf, output_pf),
         }
     }
 }
@@ -361,28 +359,58 @@ pub struct CutText {
 }
 
 // Section 7.4
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PixelFormat {
-    bits_per_pixel: u8, // TODO: must be 8, 16, or 32
-    depth: u8,          // TODO: must be < bits_per_pixel
-    big_endian: bool,
-    color_spec: ColorSpecification,
+    pub bits_per_pixel: u8, // TODO: must be 8, 16, or 32
+    pub depth: u8,          // TODO: must be < bits_per_pixel
+    pub big_endian: bool,
+    pub color_spec: ColorSpecification,
 }
 
-impl Default for PixelFormat {
-    fn default() -> Self {
-        Self {
-            bits_per_pixel: 32,
-            depth: 24,
-            big_endian: true,
+impl PixelFormat {
+    /// Constructor for a PixelFormat that uses a color format to specify colors.
+    pub fn new_colorformat(
+        bbp: u8,
+        depth: u8,
+        big_endian: bool,
+        red_shift: u8,
+        red_max: u16,
+        green_shift: u8,
+        green_max: u16,
+        blue_shift: u8,
+        blue_max: u16,
+    ) -> Self {
+        PixelFormat {
+            bits_per_pixel: bbp,
+            depth,
+            big_endian,
             color_spec: ColorSpecification::ColorFormat(ColorFormat {
-                red_max: 255,
-                blue_max: 255,
-                green_max: 255,
-                red_shift: 0,
-                green_shift: 8,
-                blue_shift: 16,
+                red_max,
+                green_max,
+                blue_max,
+                red_shift,
+                green_shift,
+                blue_shift,
             }),
+        }
+    }
+
+    /// Returns true if the pixel format is RGB888 (8-bits per color and 32 bits per pixel).
+    pub fn is_rgb_888(&self) -> bool {
+        if self.bits_per_pixel != rgb_888::BITS_PER_PIXEL || self.depth != rgb_888::DEPTH {
+            return false;
+        }
+
+        match &self.color_spec {
+            ColorSpecification::ColorFormat(cf) => {
+                (cf.red_max == rgb_888::MAX_VALUE)
+                    && (cf.green_max == rgb_888::MAX_VALUE)
+                    && (cf.blue_max == rgb_888::MAX_VALUE)
+                    && (rgb_888::valid_shift(cf.red_shift))
+                    && (rgb_888::valid_shift(cf.green_shift))
+                    && (rgb_888::valid_shift(cf.blue_shift))
+            }
+            ColorSpecification::ColorMap(_) => false,
         }
     }
 }
@@ -432,26 +460,25 @@ impl WriteMessage for PixelFormat {
     }
 }
 
-// TODO: give this a better name
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum ColorSpecification {
     ColorFormat(ColorFormat),
     ColorMap(ColorMap), // TODO: implement
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorFormat {
     // TODO: maxes must be 2^N - 1 for N bits per color
-    red_max: u16,
-    green_max: u16,
-    blue_max: u16,
-    red_shift: u8,
-    green_shift: u8,
-    blue_shift: u8,
+    pub red_max: u16,
+    pub green_max: u16,
+    pub blue_max: u16,
+    pub red_shift: u8,
+    pub green_shift: u8,
+    pub blue_shift: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorMap {}
 
 impl ReadMessage for ColorSpecification {

@@ -6,5 +6,6 @@
 
 pub mod encodings;
 mod keysym;
+pub mod pixel_formats;
 pub mod rfb;
 pub mod server;
