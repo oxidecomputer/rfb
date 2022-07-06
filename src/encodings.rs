@@ -4,7 +4,11 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use crate::rfb::{Position, Resolution};
+use crate::{
+    pixel_formats::rgb_888,
+    rfb::{PixelFormat, Position, Resolution},
+};
+use anyhow::Result;
 
 use EncodingType::*;
 
@@ -32,7 +36,12 @@ where
     Self: Send,
 {
     fn get_type(&self) -> EncodingType;
+
+    /// Transform this encoding from its representation into a byte vector that can be passed to the client.
     fn encode(&self) -> &Vec<u8>;
+
+    /// Translates this encoding type from an input pixel format to an output format.
+    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding>;
 }
 
 impl From<EncodingType> for i32 {
@@ -79,6 +88,7 @@ impl TryFrom<i32> for EncodingType {
     }
 }
 
+/// Section 7.7.1
 pub struct RawEncoding {
     pixels: Vec<u8>,
 }
@@ -96,6 +106,17 @@ impl Encoding for RawEncoding {
 
     fn encode(&self) -> &Vec<u8> {
         &self.pixels
+    }
+
+    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding> {
+        // XXX: This assumes the pixel formats are both rgb888. The server code verifies this
+        // before calling.
+        assert!(input.is_rgb_888());
+        assert!(output.is_rgb_888());
+
+        Box::new(Self {
+            pixels: rgb_888::transform(&self.pixels, &input, &output),
+        })
     }
 }
 
