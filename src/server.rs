@@ -4,7 +4,7 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use log::{debug, error, info, trace};
 use std::marker::{Send, Sync};
@@ -49,6 +49,7 @@ pub struct VncServer<S: Server> {
 #[async_trait]
 pub trait Server: Sync + Send + Clone + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
+    async fn keyevent(&self, ke: crate::rfb::KeyEvent);
 }
 
 impl<S: Server> VncServer<S> {
@@ -170,6 +171,7 @@ impl<S: Server> VncServer<S> {
                         debug!("Rx [{:?}]: FramebufferUpdateRequest={:?}", addr, f);
 
                         let mut fbu = self.server.get_framebuffer_update().await;
+
                         let data = self.data.lock().await;
 
                         // We only need to change pixel formats if the client requested a different
@@ -191,6 +193,8 @@ impl<S: Server> VncServer<S> {
                             && output_pixel_format.is_rgb_888())
                         {
                             debug!("cannot transform between pixel formats (not rgb888): input.is_rgb_888()={}, output.is_rgb_888()={}", data.input_pixel_format.is_rgb_888(), output_pixel_format.is_rgb_888());
+                        } else {
+                            debug!("no input transformation needed");
                         }
 
                         if let Err(e) = fbu.write_to(s).await {
@@ -204,6 +208,7 @@ impl<S: Server> VncServer<S> {
                     }
                     KeyEvent(ke) => {
                         trace!("Rx [{:?}]: KeyEvent={:?}", addr, ke);
+                        self.server.keyevent(ke).await;
                     }
                     PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);

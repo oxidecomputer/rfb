@@ -4,7 +4,7 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use env_logger;
@@ -13,7 +13,7 @@ use image::GenericImageView;
 use log::info;
 use rfb::encodings::RawEncoding;
 use rfb::rfb::{
-    FramebufferUpdate, PixelFormat, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
+    FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
 };
 use rfb::{
     pixel_formats::rgb_888,
@@ -220,8 +220,18 @@ fn generate_pixels(img: Image, big_endian: bool, rgb_order: (u8, u8, u8)) -> Vec
 #[async_trait]
 impl Server for ExampleServer {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate {
+        let pixels_width = 1024;
+        let pixels_height = 768;
         let pixels = generate_pixels(self.display, self.big_endian, self.rgb_order);
-        let r = Rectangle::new(0, 0, 1024, 768, Box::new(RawEncoding::new(pixels)));
+        let r = Rectangle::new(
+            0,
+            0,
+            pixels_width,
+            pixels_height,
+            Box::new(RawEncoding::new(pixels)),
+        );
         FramebufferUpdate::new(vec![r])
     }
+
+    async fn keyevent(&self, _ke: KeyEvent) {}
 }

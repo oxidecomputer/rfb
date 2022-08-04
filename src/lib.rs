@@ -5,7 +5,7 @@
 // Copyright 2022 Oxide Computer Company
 
 pub mod encodings;
-mod keysym;
+pub mod keysym;
 pub mod pixel_formats;
 pub mod rfb;
 pub mod server;

@@ -605,9 +605,14 @@ impl ReadMessage for ClientMessage {
                     // 2 bytes of padding
                     stream.read_u16().await?;
 
-                    let key = Keysym::try_from(stream.read_u32().await?)?;
+                    let keysym_val = stream.read_u32().await?;
+                    let keysym = Keysym::try_from(keysym_val)?;
 
-                    let key_event = KeyEvent { is_pressed, key };
+                    let key_event = KeyEvent {
+                        is_pressed,
+                        keysym,
+                        keysym_val,
+                    };
 
                     Ok(ClientMessage::KeyEvent(key_event))
                 }
@@ -650,11 +655,12 @@ pub struct FramebufferUpdateRequest {
     resolution: Resolution,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
 pub struct KeyEvent {
-    is_pressed: bool,
-    key: Keysym,
+    pub is_pressed: bool,
+    pub keysym: Keysym,
+    pub keysym_val: u32,
 }
 
 bitflags! {
