@@ -224,9 +224,9 @@ impl FramebufferUpdate {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct Position {
-    x: u16,
-    y: u16,
+pub struct Position {
+    pub x: u16,
+    pub y: u16,
 }
 
 impl ReadMessage for Position {
@@ -242,9 +242,9 @@ impl ReadMessage for Position {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct Resolution {
-    width: u16,
-    height: u16,
+pub struct Resolution {
+    pub width: u16,
+    pub height: u16,
 }
 
 impl ReadMessage for Resolution {
@@ -271,9 +271,9 @@ impl WriteMessage for Resolution {
 }
 
 pub struct Rectangle {
-    position: Position,
-    dimensions: Resolution,
-    data: Box<dyn Encoding>,
+    pub position: Position,
+    pub dimensions: Resolution,
+    pub data: Box<dyn Encoding>,
 }
 
 impl Rectangle {
@@ -650,9 +650,9 @@ impl ReadMessage for ClientMessage {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct FramebufferUpdateRequest {
-    incremental: bool,
-    position: Position,
-    resolution: Resolution,
+    pub incremental: bool,
+    pub position: Position,
+    pub resolution: Resolution,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -677,7 +677,7 @@ impl KeyEvent {
 }
 
 bitflags! {
-    struct MouseButtons: u8 {
+    pub struct MouseButtons: u8 {
         const LEFT = 1 << 0;
         const MIDDLE = 1 << 1;
         const RIGHT = 1 << 2;
@@ -691,8 +691,8 @@ bitflags! {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct PointerEvent {
-    position: Position,
-    pressed: MouseButtons,
+    pub position: Position,
+    pub pressed: MouseButtons,
 }
 
 impl ReadMessage for PointerEvent {
