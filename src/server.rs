@@ -13,11 +13,8 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-use crate::rfb::ClientMessage::{
-    ClientCutText, FramebufferUpdateRequest, KeyEvent, PointerEvent, SetEncodings, SetPixelFormat,
-};
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, PixelFormat, ProtoVersion, ReadMessage,
+    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, ReadMessage,
     SecurityResult, SecurityType, SecurityTypes, ServerInit, WriteMessage,
 };
 
@@ -49,7 +46,7 @@ pub struct VncServer<S: Server> {
 #[async_trait]
 pub trait Server: Sync + Send + Clone + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
-    async fn keyevent(&self, ke: crate::rfb::KeyEvent);
+    async fn keyevent(&self, _ke: KeyEvent) {}
 }
 
 impl<S: Server> VncServer<S> {
@@ -158,16 +155,16 @@ impl<S: Server> VncServer<S> {
 
             match req {
                 Ok(client_msg) => match client_msg {
-                    SetPixelFormat(pf) => {
+                    ClientMessage::SetPixelFormat(pf) => {
                         debug!("Rx [{:?}]: SetPixelFormat={:#?}", addr, pf);
 
                         // TODO: invalid pixel formats?
                         output_pixel_format = pf;
                     }
-                    SetEncodings(e) => {
+                    ClientMessage::SetEncodings(e) => {
                         debug!("Rx [{:?}]: SetEncodings={:?}", addr, e);
                     }
-                    FramebufferUpdateRequest(f) => {
+                    ClientMessage::FramebufferUpdateRequest(f) => {
                         debug!("Rx [{:?}]: FramebufferUpdateRequest={:?}", addr, f);
 
                         let mut fbu = self.server.get_framebuffer_update().await;
@@ -206,14 +203,14 @@ impl<S: Server> VncServer<S> {
                         }
                         debug!("Tx [{:?}]: FramebufferUpdate", addr);
                     }
-                    KeyEvent(ke) => {
+                    ClientMessage::KeyEvent(ke) => {
                         trace!("Rx [{:?}]: KeyEvent={:?}", addr, ke);
                         self.server.keyevent(ke).await;
                     }
-                    PointerEvent(pe) => {
+                    ClientMessage::PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);
                     }
-                    ClientCutText(t) => {
+                    ClientMessage::ClientCutText(t) => {
                         trace!("Rx [{:?}: ClientCutText={:?}", addr, t);
                     }
                 },
