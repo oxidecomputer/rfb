@@ -46,7 +46,7 @@ pub struct VncServer<S: Server> {
 #[async_trait]
 pub trait Server: Sync + Send + Clone + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
-    async fn keyevent(&self, _ke: KeyEvent) {}
+    async fn key_event(&self, _ke: KeyEvent) {}
 }
 
 impl<S: Server> VncServer<S> {
@@ -205,7 +205,7 @@ impl<S: Server> VncServer<S> {
                     }
                     ClientMessage::KeyEvent(ke) => {
                         trace!("Rx [{:?}]: KeyEvent={:?}", addr, ke);
-                        self.server.keyevent(ke).await;
+                        self.server.key_event(ke).await;
                     }
                     ClientMessage::PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);

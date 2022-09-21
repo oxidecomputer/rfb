@@ -4,8 +4,10 @@
 //
 // Copyright 2022 Oxide Computer Company
 
+use anyhow::anyhow;
+pub use ascii::AsciiChar;
 use ascii::ToAsciiChar;
-use Keysym::*;
+use KeySym::*;
 
 // ascii characters have the same values as their keysym
 const ASCII_MAX: u32 = 0x7f;
@@ -75,7 +77,7 @@ const KEYSYM_KP_PERIOD: u32 = 0xffae;
 const KEYSYM_KP_DELETE: u32 = 0xff9f;
 
 #[derive(Debug, Copy, Clone)]
-pub enum Keysym {
+pub enum KeySym {
     Ascii(ascii::AsciiChar),
     Backspace,
     Tab,
@@ -142,18 +144,19 @@ pub enum Keysym {
     KeypadUp,
     Keypad9,
     KeypadPgUp,
-
-    Unknown(u32),
 }
 
-impl TryFrom<u32> for Keysym {
+impl TryFrom<u32> for KeySym {
     type Error = anyhow::Error;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             v if v <= ASCII_MAX => {
-                let ac = v.to_ascii_char().unwrap();
-                Ok(Ascii(ac))
+                let ac_res = v.to_ascii_char();
+                match ac_res {
+                    Ok(ac) => Ok(Ascii(ac)),
+                    Err(e) => Err(anyhow!("invalid keysym=0x{:x} ({:?})", value, e)),
+                }
             }
             KEYSYM_BACKSPACE => Ok(Backspace),
             KEYSYM_TAB => Ok(Tab),
@@ -221,7 +224,7 @@ impl TryFrom<u32> for Keysym {
             KEYSYM_KP_PERIOD => Ok(KeypadPeriod),
             KEYSYM_KP_DELETE => Ok(KeypadDelete),
 
-            _ => Ok(Unknown(value)),
+            _ => Err(anyhow!("unknown keysym=0x{:x}", value)),
         }
     }
 }

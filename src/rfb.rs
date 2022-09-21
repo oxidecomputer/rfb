@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::encodings::{Encoding, EncodingType};
-use crate::keysym::Keysym;
+use crate::keysym::KeySym;
 use crate::pixel_formats::rgb_888;
 
 pub trait ReadMessage {
@@ -606,7 +606,7 @@ impl ReadMessage for ClientMessage {
                     stream.read_u16().await?;
 
                     let keysym_val = stream.read_u32().await?;
-                    let keysym = Keysym::try_from(keysym_val)?;
+                    let keysym = KeySym::try_from(keysym_val)?;
 
                     let key_event = KeyEvent {
                         is_pressed,
@@ -656,10 +656,9 @@ pub struct FramebufferUpdateRequest {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[allow(dead_code)]
 pub struct KeyEvent {
     pub is_pressed: bool,
-    pub keysym: Keysym,
+    pub keysym: KeySym,
     pub keysym_val: u32,
 }
 
