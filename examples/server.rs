@@ -233,5 +233,5 @@ impl Server for ExampleServer {
         FramebufferUpdate::new(vec![r])
     }
 
-    async fn keyevent(&self, _ke: KeyEvent) {}
+    async fn key_event(&self, _ke: KeyEvent) {}
 }
