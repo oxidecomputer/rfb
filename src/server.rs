@@ -4,7 +4,7 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use log::{debug, error, info, trace};
 use std::marker::{Send, Sync};
@@ -13,11 +13,8 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-use crate::rfb::ClientMessage::{
-    ClientCutText, FramebufferUpdateRequest, KeyEvent, PointerEvent, SetEncodings, SetPixelFormat,
-};
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, PixelFormat, ProtoVersion, ReadMessage,
+    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, ReadMessage,
     SecurityResult, SecurityType, SecurityTypes, ServerInit, WriteMessage,
 };
 
@@ -49,6 +46,7 @@ pub struct VncServer<S: Server> {
 #[async_trait]
 pub trait Server: Sync + Send + Clone + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
+    async fn key_event(&self, _ke: KeyEvent) {}
 }
 
 impl<S: Server> VncServer<S> {
@@ -157,19 +155,20 @@ impl<S: Server> VncServer<S> {
 
             match req {
                 Ok(client_msg) => match client_msg {
-                    SetPixelFormat(pf) => {
+                    ClientMessage::SetPixelFormat(pf) => {
                         debug!("Rx [{:?}]: SetPixelFormat={:#?}", addr, pf);
 
                         // TODO: invalid pixel formats?
                         output_pixel_format = pf;
                     }
-                    SetEncodings(e) => {
+                    ClientMessage::SetEncodings(e) => {
                         debug!("Rx [{:?}]: SetEncodings={:?}", addr, e);
                     }
-                    FramebufferUpdateRequest(f) => {
+                    ClientMessage::FramebufferUpdateRequest(f) => {
                         debug!("Rx [{:?}]: FramebufferUpdateRequest={:?}", addr, f);
 
                         let mut fbu = self.server.get_framebuffer_update().await;
+
                         let data = self.data.lock().await;
 
                         // We only need to change pixel formats if the client requested a different
@@ -191,6 +190,8 @@ impl<S: Server> VncServer<S> {
                             && output_pixel_format.is_rgb_888())
                         {
                             debug!("cannot transform between pixel formats (not rgb888): input.is_rgb_888()={}, output.is_rgb_888()={}", data.input_pixel_format.is_rgb_888(), output_pixel_format.is_rgb_888());
+                        } else {
+                            debug!("no input transformation needed");
                         }
 
                         if let Err(e) = fbu.write_to(s).await {
@@ -202,13 +203,14 @@ impl<S: Server> VncServer<S> {
                         }
                         debug!("Tx [{:?}]: FramebufferUpdate", addr);
                     }
-                    KeyEvent(ke) => {
+                    ClientMessage::KeyEvent(ke) => {
                         trace!("Rx [{:?}]: KeyEvent={:?}", addr, ke);
+                        self.server.key_event(ke).await;
                     }
-                    PointerEvent(pe) => {
+                    ClientMessage::PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);
                     }
-                    ClientCutText(t) => {
+                    ClientMessage::ClientCutText(t) => {
                         trace!("Rx [{:?}: ClientCutText={:?}", addr, t);
                     }
                 },

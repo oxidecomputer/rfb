@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::encodings::{Encoding, EncodingType};
-use crate::keysym::Keysym;
+use crate::keysym::KeySym;
 use crate::pixel_formats::rgb_888;
 
 pub trait ReadMessage {
@@ -605,9 +605,14 @@ impl ReadMessage for ClientMessage {
                     // 2 bytes of padding
                     stream.read_u16().await?;
 
-                    let key = Keysym::try_from(stream.read_u32().await?)?;
+                    let keysym_raw = stream.read_u32().await?;
+                    let keysym = KeySym::try_from(keysym_raw)?;
 
-                    let key_event = KeyEvent { is_pressed, key };
+                    let key_event = KeyEvent {
+                        is_pressed,
+                        keysym,
+                        keysym_raw,
+                    };
 
                     Ok(ClientMessage::KeyEvent(key_event))
                 }
@@ -650,11 +655,25 @@ pub struct FramebufferUpdateRequest {
     resolution: Resolution,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
+#[derive(Debug, Copy, Clone)]
 pub struct KeyEvent {
     is_pressed: bool,
-    key: Keysym,
+    keysym: KeySym,
+    keysym_raw: u32,
+}
+
+impl KeyEvent {
+    pub fn keysym_raw(&self) -> u32 {
+        self.keysym_raw
+    }
+
+    pub fn keysym(&self) -> KeySym {
+        self.keysym
+    }
+
+    pub fn is_pressed(&self) -> bool {
+        self.is_pressed
+    }
 }
 
 bitflags! {
