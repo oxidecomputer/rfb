@@ -13,7 +13,8 @@ use image::GenericImageView;
 use log::info;
 use rfb::encodings::RawEncoding;
 use rfb::rfb::{
-    FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
+    FramebufferUpdate, KeyEvent, PixelFormat, PointerEvent, ProtoVersion, Rectangle, SecurityType,
+    SecurityTypes,
 };
 use rfb::{
     pixel_formats::rgb_888,
@@ -108,8 +109,8 @@ async fn main() -> Result<()> {
         name: "rfb-example-server".to_string(),
     };
     let data = VncServerData {
-        width: WIDTH as u16,
-        height: HEIGHT as u16,
+        width: WIDTH as _,
+        height: HEIGHT as _,
         input_pixel_format: pf.clone(),
     };
     let server = ExampleServer {
@@ -220,8 +221,8 @@ fn generate_pixels(img: Image, big_endian: bool, rgb_order: (u8, u8, u8)) -> Vec
 #[async_trait]
 impl Server for ExampleServer {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate {
-        let pixels_width = 1024;
-        let pixels_height = 768;
+        let pixels_width = WIDTH as _;
+        let pixels_height = HEIGHT as _;
         let pixels = generate_pixels(self.display, self.big_endian, self.rgb_order);
         let r = Rectangle::new(
             0,
@@ -233,5 +234,23 @@ impl Server for ExampleServer {
         FramebufferUpdate::new(vec![r])
     }
 
-    async fn key_event(&self, _ke: KeyEvent) {}
+    async fn key_event(&self, ke: KeyEvent) {
+        log::info!(
+            "Key {:?} {}",
+            ke.keysym(),
+            if ke.is_pressed() {
+                "pressed"
+            } else {
+                "reselased"
+            }
+        );
+    }
+
+    async fn pointer_event(&self, pe: PointerEvent) {
+        log::info!("Pointer {:?} {:?}", pe.position, pe.pressed);
+    }
+
+    async fn cut_text(&self, t: String) {
+        log::info!("Cut {:?}", t);
+    }
 }
