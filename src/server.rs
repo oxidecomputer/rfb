@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::rfb::{
     ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, ReadMessage,
-    SecurityResult, SecurityType, SecurityTypes, ServerInit, WriteMessage,
+    SecurityResult, SecurityType, SecurityTypes, ServerInit, WriteMessage, PointerEvent,
 };
 
 /// Immutable state
@@ -47,6 +47,7 @@ pub struct VncServer<S: Server> {
 pub trait Server: Sync + Send + Clone + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
     async fn key_event(&self, _ke: KeyEvent) {}
+    async fn pointer_event(&self, _pe: PointerEvent) {}
 }
 
 impl<S: Server> VncServer<S> {
@@ -209,6 +210,7 @@ impl<S: Server> VncServer<S> {
                     }
                     ClientMessage::PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);
+                        self.server.pointer_event(pe).await;
                     }
                     ClientMessage::ClientCutText(t) => {
                         trace!("Rx [{:?}: ClientCutText={:?}", addr, t);
