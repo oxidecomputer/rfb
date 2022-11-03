@@ -36,30 +36,29 @@ pub struct VncServerData {
     pub input_pixel_format: PixelFormat,
 }
 
-#[derive(Clone)]
 pub struct VncServer<S: Server> {
-    config: Arc<VncServerConfig>,
-    data: Arc<Mutex<VncServerData>>,
-    pub server: Arc<S>,
+    config: VncServerConfig,
+    data: Mutex<VncServerData>,
+    pub server: S,
 }
 
 #[async_trait]
-pub trait Server: Sync + Send + Clone + 'static {
+pub trait Server: Sync + Send + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
     async fn key_event(&self, _ke: KeyEvent) {}
 }
 
 impl<S: Server> VncServer<S> {
-    pub fn new(server: S, config: VncServerConfig, data: VncServerData) -> Self {
+    pub fn new(server: S, config: VncServerConfig, data: VncServerData) -> Arc<Self> {
         assert!(
             config.sec_types.0.len() > 0,
             "at least one security type must be defined"
         );
-        Self {
-            config: Arc::new(config),
-            data: Arc::new(Mutex::new(data)),
-            server: Arc::new(server),
-        }
+        Arc::new(Self {
+            config: config,
+            data: Mutex::new(data),
+            server: server,
+        })
     }
 
     pub async fn set_pixel_format(&self, pixel_format: PixelFormat) {
@@ -222,7 +221,7 @@ impl<S: Server> VncServer<S> {
         }
     }
 
-    pub async fn start(&self) {
+    pub async fn start(self: &Arc<Self>) {
         let listener = TcpListener::bind(self.config.addr).await.unwrap();
 
         loop {
