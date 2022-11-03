@@ -4,19 +4,41 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::{bail, Result};
-use async_trait::async_trait;
-use log::{debug, error, info, trace};
 use std::marker::{Send, Sync};
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use log::{debug, error, info, trace};
+use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, ReadMessage,
-    SecurityResult, SecurityType, SecurityTypes, ServerInit, WriteMessage,
+    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion,
+    ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes, ServerInit,
+    WriteMessage,
 };
+
+#[derive(Debug, Error)]
+pub enum HandshakeError {
+    #[error("incompatible protocol versions (client = {client:?}, server = {server:?})")]
+    IncompatibleVersions {
+        client: ProtoVersion,
+        server: ProtoVersion,
+    },
+
+    #[error(
+        "incompatible security types (client choice = {choice:?}, server offered = {offer:?})"
+    )]
+    IncompatibleSecurityTypes {
+        choice: SecurityType,
+        offer: SecurityTypes,
+    },
+
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+}
 
 /// Immutable state
 pub struct VncServerConfig {
@@ -72,7 +94,11 @@ impl<S: Server> VncServer<S> {
         locked.height = height;
     }
 
-    async fn rfb_handshake(&self, s: &mut TcpStream, addr: SocketAddr) -> Result<()> {
+    async fn rfb_handshake(
+        &self,
+        s: &mut TcpStream,
+        addr: SocketAddr,
+    ) -> Result<(), HandshakeError> {
         // ProtocolVersion handshake
         info!("Tx [{:?}]: ProtoVersion={:?}", addr, self.config.version);
         self.config.version.write_to(s).await?;
@@ -85,7 +111,10 @@ impl<S: Server> VncServer<S> {
                 addr, client_version, self.config.version
             );
             error!("{}", err_str);
-            bail!(err_str);
+            return Err(HandshakeError::IncompatibleVersions {
+                client: client_version,
+                server: self.config.version,
+            });
         }
 
         // Security Handshake
@@ -100,7 +129,10 @@ impl<S: Server> VncServer<S> {
             failure.write_to(s).await?;
             let err_str = format!("invalid security choice={:?}", client_choice);
             error!("{}", err_str);
-            bail!(err_str);
+            return Err(HandshakeError::IncompatibleSecurityTypes {
+                choice: client_choice,
+                offer: self.config.sec_types.clone(),
+            });
         }
 
         let res = SecurityResult::Success;
@@ -110,7 +142,11 @@ impl<S: Server> VncServer<S> {
         Ok(())
     }
 
-    async fn rfb_initialization(&self, s: &mut TcpStream, addr: SocketAddr) -> Result<()> {
+    async fn rfb_initialization(
+        &self,
+        s: &mut TcpStream,
+        addr: SocketAddr,
+    ) -> Result<(), ProtocolError> {
         let client_init = ClientInit::read_from(s).await?;
         info!("Rx [{:?}]: ClientInit={:?}", addr, client_init);
         // TODO: decide what to do in exclusive case

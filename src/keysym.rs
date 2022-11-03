@@ -4,7 +4,6 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::anyhow;
 pub use ascii::AsciiChar;
 use ascii::ToAsciiChar;
 use KeySym::*;
@@ -146,18 +145,17 @@ pub enum KeySym {
     KeypadPgUp,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("unknown keysym: 0x{0:x}")]
+pub struct KeySymError(u32);
+
 impl TryFrom<u32> for KeySym {
-    type Error = anyhow::Error;
+    type Error = KeySymError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            v if v <= ASCII_MAX => {
-                let ac_res = v.to_ascii_char();
-                match ac_res {
-                    Ok(ac) => Ok(Ascii(ac)),
-                    Err(e) => Err(anyhow!("invalid keysym=0x{:x} ({:?})", value, e)),
-                }
-            }
+            // SAFETY: we're within the valid ascii range
+            0..=ASCII_MAX => Ok(Ascii(unsafe { value.to_ascii_char_unchecked() })),
             KEYSYM_BACKSPACE => Ok(Backspace),
             KEYSYM_TAB => Ok(Tab),
             KEYSYM_RETURN_ENTER => Ok(ReturnOrEnter),
@@ -224,7 +222,7 @@ impl TryFrom<u32> for KeySym {
             KEYSYM_KP_PERIOD => Ok(KeypadPeriod),
             KEYSYM_KP_DELETE => Ok(KeypadDelete),
 
-            _ => Err(anyhow!("unknown keysym=0x{:x}", value)),
+            _ => Err(KeySymError(value)),
         }
     }
 }

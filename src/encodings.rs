@@ -8,7 +8,6 @@ use crate::{
     pixel_formats::rgb_888,
     rfb::{PixelFormat, Position, Resolution},
 };
-use anyhow::Result;
 
 use EncodingType::*;
 
@@ -65,25 +64,23 @@ impl From<EncodingType> for i32 {
     }
 }
 
-impl TryFrom<i32> for EncodingType {
-    type Error = anyhow::Error;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
+impl From<i32> for EncodingType {
+    fn from(value: i32) -> Self {
         match value {
-            0 => Ok(Raw),
-            1 => Ok(CopyRect),
-            2 => Ok(RRE),
-            5 => Ok(Hextile),
-            15 => Ok(TRLE),
-            16 => Ok(ZRLE),
-            -239 => Ok(CursorPseudo),
-            -223 => Ok(DesktopSizePseudo),
-            22 => Ok(JRLE),
-            24 => Ok(ZRLE2),
-            21 => Ok(JPEG),
-            6 => Ok(Zlib),
-            -314 => Ok(CursorWithAlpha),
-            v => Ok(EncodingType::Other(v)),
+            0 => Raw,
+            1 => CopyRect,
+            2 => RRE,
+            5 => Hextile,
+            15 => TRLE,
+            16 => ZRLE,
+            -239 => CursorPseudo,
+            -223 => DesktopSizePseudo,
+            22 => JRLE,
+            24 => ZRLE2,
+            21 => JPEG,
+            6 => Zlib,
+            -314 => CursorWithAlpha,
+            v => EncodingType::Other(v),
         }
     }
 }
