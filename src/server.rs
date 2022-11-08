@@ -4,19 +4,46 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::{bail, Result};
-use async_trait::async_trait;
-use log::{debug, error, info, trace};
+use std::io;
 use std::marker::{Send, Sync};
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::FutureExt;
+use futures::future::Shared;
+use log::{debug, error, info, trace};
+use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::select;
+use tokio::sync::{Mutex, oneshot};
 
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, ReadMessage,
-    SecurityResult, SecurityType, SecurityTypes, ServerInit, WriteMessage,
+    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion,
+    ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes, ServerInit,
+    WriteMessage,
 };
+
+#[derive(Debug, Error)]
+pub enum HandshakeError {
+    #[error("incompatible protocol versions (client = {client:?}, server = {server:?})")]
+    IncompatibleVersions {
+        client: ProtoVersion,
+        server: ProtoVersion,
+    },
+
+    #[error(
+        "incompatible security types (client choice = {choice:?}, server offered = {offer:?})"
+    )]
+    IncompatibleSecurityTypes {
+        choice: SecurityType,
+        offer: SecurityTypes,
+    },
+
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+}
 
 /// Immutable state
 pub struct VncServerConfig {
@@ -36,30 +63,39 @@ pub struct VncServerData {
     pub input_pixel_format: PixelFormat,
 }
 
-#[derive(Clone)]
 pub struct VncServer<S: Server> {
-    config: Arc<VncServerConfig>,
-    data: Arc<Mutex<VncServerData>>,
-    pub server: Arc<S>,
+    /// VNC startup server configuration
+    config: VncServerConfig,
+
+    /// VNC runtime mutable state
+    data: Mutex<VncServerData>,
+
+    /// The underlying [`Server`] implementation
+    pub server: S,
+
+    /// One-shot channel used to signal that the server should shut down.
+    stop_ch: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 #[async_trait]
-pub trait Server: Sync + Send + Clone + 'static {
+pub trait Server: Sync + Send + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
     async fn key_event(&self, _ke: KeyEvent) {}
+    async fn stop(&self) {}
 }
 
 impl<S: Server> VncServer<S> {
-    pub fn new(server: S, config: VncServerConfig, data: VncServerData) -> Self {
+    pub fn new(server: S, config: VncServerConfig, data: VncServerData) -> Arc<Self> {
         assert!(
             config.sec_types.0.len() > 0,
             "at least one security type must be defined"
         );
-        Self {
-            config: Arc::new(config),
-            data: Arc::new(Mutex::new(data)),
-            server: Arc::new(server),
-        }
+        Arc::new(Self {
+            config: config,
+            data: Mutex::new(data),
+            server: server,
+            stop_ch: Mutex::new(None),
+        })
     }
 
     pub async fn set_pixel_format(&self, pixel_format: PixelFormat) {
@@ -73,7 +109,11 @@ impl<S: Server> VncServer<S> {
         locked.height = height;
     }
 
-    async fn rfb_handshake(&self, s: &mut TcpStream, addr: SocketAddr) -> Result<()> {
+    async fn rfb_handshake(
+        &self,
+        s: &mut TcpStream,
+        addr: SocketAddr,
+    ) -> Result<(), HandshakeError> {
         // ProtocolVersion handshake
         info!("Tx [{:?}]: ProtoVersion={:?}", addr, self.config.version);
         self.config.version.write_to(s).await?;
@@ -86,7 +126,10 @@ impl<S: Server> VncServer<S> {
                 addr, client_version, self.config.version
             );
             error!("{}", err_str);
-            bail!(err_str);
+            return Err(HandshakeError::IncompatibleVersions {
+                client: client_version,
+                server: self.config.version,
+            });
         }
 
         // Security Handshake
@@ -101,7 +144,10 @@ impl<S: Server> VncServer<S> {
             failure.write_to(s).await?;
             let err_str = format!("invalid security choice={:?}", client_choice);
             error!("{}", err_str);
-            bail!(err_str);
+            return Err(HandshakeError::IncompatibleSecurityTypes {
+                choice: client_choice,
+                offer: self.config.sec_types.clone(),
+            });
         }
 
         let res = SecurityResult::Success;
@@ -111,7 +157,11 @@ impl<S: Server> VncServer<S> {
         Ok(())
     }
 
-    async fn rfb_initialization(&self, s: &mut TcpStream, addr: SocketAddr) -> Result<()> {
+    async fn rfb_initialization(
+        &self,
+        s: &mut TcpStream,
+        addr: SocketAddr,
+    ) -> Result<(), ProtocolError> {
         let client_init = ClientInit::read_from(s).await?;
         info!("Rx [{:?}]: ClientInit={:?}", addr, client_init);
         // TODO: decide what to do in exclusive case
@@ -133,7 +183,7 @@ impl<S: Server> VncServer<S> {
         Ok(())
     }
 
-    async fn handle_conn(&self, s: &mut TcpStream, addr: SocketAddr) {
+    async fn handle_conn(&self, s: &mut TcpStream, addr: SocketAddr, mut close_ch: Shared<oneshot::Receiver<()>>) {
         info!("[{:?}] new connection", addr);
 
         if let Err(e) = self.rfb_handshake(s, addr).await {
@@ -151,7 +201,18 @@ impl<S: Server> VncServer<S> {
         drop(data);
 
         loop {
-            let req = ClientMessage::read_from(s).await;
+            let req = select! {
+                // Poll in the order written so we check for close first
+                biased;
+
+                _ = &mut close_ch => {
+                    info!("[{:?}] server stopping, closing connection with peer", addr);
+                    let _ = s.shutdown().await;
+                    return;
+                }
+
+                req = ClientMessage::read_from(s) => req,
+            };
 
             match req {
                 Ok(client_msg) => match client_msg {
@@ -222,15 +283,41 @@ impl<S: Server> VncServer<S> {
         }
     }
 
-    pub async fn start(&self) {
-        let listener = TcpListener::bind(self.config.addr).await.unwrap();
+    /// Start listening for incoming connections.
+    pub async fn start(self: &Arc<Self>) -> io::Result<()> {
+        let listener = TcpListener::bind(self.config.addr).await?;
+
+        // Create a channel to signal the server to stop.
+        let (close_tx, close_rx) = oneshot::channel();
+        assert!(self.stop_ch.lock().await.replace(close_tx).is_none(), "server already started");
+        let mut close_rx = close_rx.shared();
 
         loop {
-            let (mut s, a) = listener.accept().await.unwrap();
+            let (mut client_sock, client_addr) = select! {
+                // Poll in the order written so we check for close first
+                biased;
+
+                _ = &mut close_rx => {
+                    info!("server stopping");
+                    self.server.stop().await;
+                    return Ok(());
+                }
+
+                conn = listener.accept() => conn?,
+            };
+
+            let close_rx = close_rx.clone();
             let server = self.clone();
             tokio::spawn(async move {
-                VncServer::handle_conn(&server, &mut s, a).await;
+                server.handle_conn(&mut client_sock, client_addr, close_rx).await;
             });
+        }
+    }
+
+    /// Stop the server (and disconnect any client) if it's running.
+    pub async fn stop(self: &Arc<Self>) {
+        if let Some(close_tx) = self.stop_ch.lock().await.take() {
+            let _ = close_tx.send(());
         }
     }
 }

@@ -53,6 +53,12 @@
 //! - blue = pixel\[1\] & 255 = 0x03
 //!
 
+#[derive(Debug, thiserror::Error)]
+pub enum PixelFormatError {
+    #[error("unsupported or unknown fourcc: 0x{0:x}")]
+    UnsupportedFourCc(u32),
+}
+
 ///  Utility functions and constants related to fourcc codes.
 ///
 /// Fourcc is a 4-byte ASCII code representing a pixel format. For example, the value
@@ -62,9 +68,8 @@
 /// A good reference for mapping common fourcc codes to their corresponding pixel formats is the
 /// drm_fourcc.h header file in the linux source code.
 pub mod fourcc {
-    use super::rgb_888;
+    use super::{rgb_888, PixelFormatError};
     use crate::rfb::{ColorFormat, ColorSpecification, PixelFormat};
-    use anyhow::{anyhow, Result};
 
     // XXX: it might make sense to turn fourcc values into a type (such as an enum or collection of
     // enums)
@@ -73,7 +78,7 @@ pub mod fourcc {
     pub const FOURCC_BX24: u32 = 0x34325842; // little-endian BGRx, 8:8:8:8
     pub const FOURCC_XB24: u32 = 0x34324258; // little-endian xBGR, 8:8:8:8
 
-    pub fn fourcc_to_pixel_format(fourcc: u32) -> Result<PixelFormat> {
+    pub fn fourcc_to_pixel_format(fourcc: u32) -> Result<PixelFormat, PixelFormatError> {
         match fourcc {
             // little-endian xRGB
             FOURCC_XR24 => Ok(PixelFormat {
@@ -135,7 +140,7 @@ pub mod fourcc {
                 }),
             }),
 
-            v => Err(anyhow!("unknown fourcc: {}", v)),
+            v => Err(PixelFormatError::UnsupportedFourCc(v)),
         }
     }
 }

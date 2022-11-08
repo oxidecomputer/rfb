@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
         big_endian: args.big_endian,
     };
     let s = VncServer::new(server, config, data);
-    s.start().await;
+    s.start().await?;
 
     Ok(())
 }
