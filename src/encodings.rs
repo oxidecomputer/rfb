@@ -5,10 +5,11 @@
 // Copyright 2022 Oxide Computer Company
 
 use crate::{
-    pixel_formats::rgb_888,
+    pixel_formats::transform,
     rfb::{PixelFormat, Position, Resolution},
 };
 
+use crate::rfb::ColorSpecification;
 use EncodingType::*;
 
 #[derive(Debug)]
@@ -80,7 +81,7 @@ impl From<i32> for EncodingType {
             21 => JPEG,
             6 => Zlib,
             -314 => CursorWithAlpha,
-            v => EncodingType::Other(v),
+            v => Other(v),
         }
     }
 }
@@ -98,7 +99,7 @@ impl RawEncoding {
 
 impl Encoding for RawEncoding {
     fn get_type(&self) -> EncodingType {
-        EncodingType::Raw
+        Raw
     }
 
     fn encode(&self) -> &Vec<u8> {
@@ -106,13 +107,19 @@ impl Encoding for RawEncoding {
     }
 
     fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding> {
-        // XXX: This assumes the pixel formats are both rgb888. The server code verifies this
+        // XXX: This assumes the pixel formats are both rgb. The server code verifies this
         // before calling.
-        assert!(input.is_rgb_888());
-        assert!(output.is_rgb_888());
+        assert!(matches!(
+            &input.color_spec,
+            ColorSpecification::ColorFormat(_)
+        ));
+        assert!(matches!(
+            &output.color_spec,
+            ColorSpecification::ColorFormat(_)
+        ));
 
         Box::new(Self {
-            pixels: rgb_888::transform(&self.pixels, &input, &output),
+            pixels: transform(&self.pixels, &input, &output),
         })
     }
 }

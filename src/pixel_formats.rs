@@ -53,6 +53,8 @@
 //! - blue = pixel\[1\] & 255 = 0x03
 //!
 
+use crate::rfb::{ColorFormat, ColorSpecification, PixelFormat};
+
 #[derive(Debug, thiserror::Error)]
 pub enum PixelFormatError {
     #[error("unsupported or unknown fourcc: 0x{0:x}")]
@@ -68,102 +70,192 @@ pub enum PixelFormatError {
 /// A good reference for mapping common fourcc codes to their corresponding pixel formats is the
 /// drm_fourcc.h header file in the linux source code.
 pub mod fourcc {
-    use super::{rgb_888, PixelFormatError};
-    use crate::rfb::{ColorFormat, ColorSpecification, PixelFormat};
+    use super::{ColorConstants, PixelFormatError};
+    use crate::pixel_formats::{Rgb332Formats, Rgb565Formats, Rgb888Formats};
+    use crate::rfb::PixelFormat;
 
-    // XXX: it might make sense to turn fourcc values into a type (such as an enum or collection of
-    // enums)
-    pub const FOURCC_XR24: u32 = 0x34325258; // little-endian xRGB, 8:8:8:8
-    pub const FOURCC_RX24: u32 = 0x34325852; // little-endian RGBx, 8:8:8:8
-    pub const FOURCC_BX24: u32 = 0x34325842; // little-endian BGRx, 8:8:8:8
-    pub const FOURCC_XB24: u32 = 0x34324258; // little-endian xBGR, 8:8:8:8
+    #[repr(u32)]
+    pub enum FourCC {
+        /// little-endian xRGB, 8:8:8:8
+        XR24 = u32::from_ne_bytes(*b"XR24"),
+        /// little-endian RGBx, 8:8:8:8
+        RX24 = u32::from_ne_bytes(*b"RX24"),
+        /// little-endian xBGR, 8:8:8:8
+        XB24 = u32::from_ne_bytes(*b"XB24"),
+        /// little-endian BGRx, 8:8:8:8
+        BX24 = u32::from_ne_bytes(*b"BX24"),
+        /// little-endian RGB, 5:6:5
+        RG16 = u32::from_ne_bytes(*b"RG16"),
+        /// little-endian BGR, 5:6:5
+        BG16 = u32::from_ne_bytes(*b"BG16"),
+        /// RGB, 3:3:2
+        RGB8 = u32::from_ne_bytes(*b"RGB8"),
+        /// BGR, 2:3:3
+        BGR8 = u32::from_ne_bytes(*b"BGR8"),
+    }
+
+    pub const FOURCC_XR24: u32 = FourCC::XR24 as u32;
+    pub const FOURCC_RX24: u32 = FourCC::RX24 as u32;
+    pub const FOURCC_BX24: u32 = FourCC::BX24 as u32;
+    pub const FOURCC_XB24: u32 = FourCC::XB24 as u32;
+    pub const FOURCC_RG16: u32 = FourCC::RG16 as u32;
+    pub const FOURCC_BG16: u32 = FourCC::BG16 as u32;
+    pub const FOURCC_RGB8: u32 = FourCC::RGB8 as u32;
+    pub const FOURCC_BGR8: u32 = FourCC::BGR8 as u32;
+
+    impl TryFrom<u32> for FourCC {
+        type Error = PixelFormatError;
+
+        fn try_from(value: u32) -> Result<Self, Self::Error> {
+            match value {
+                FOURCC_XR24 => Ok(FourCC::XR24),
+                FOURCC_RX24 => Ok(FourCC::RX24),
+                FOURCC_XB24 => Ok(FourCC::XB24),
+                FOURCC_BX24 => Ok(FourCC::BX24),
+                FOURCC_RG16 => Ok(FourCC::RG16),
+                FOURCC_BG16 => Ok(FourCC::BG16),
+                FOURCC_RGB8 => Ok(FourCC::RGB8),
+                FOURCC_BGR8 => Ok(FourCC::BGR8),
+                v => Err(PixelFormatError::UnsupportedFourCc(v)),
+            }
+        }
+    }
+
+    impl From<&FourCC> for PixelFormat {
+        fn from(value: &FourCC) -> Self {
+            match value {
+                FourCC::XR24 => Rgb888Formats::to_pix_fmt(false, 0),
+                FourCC::RX24 => Rgb888Formats::to_pix_fmt(false, 8),
+                FourCC::XB24 => Rgb888Formats::to_pix_fmt(true, 0),
+                FourCC::BX24 => Rgb888Formats::to_pix_fmt(true, 8),
+                FourCC::RG16 => Rgb565Formats::to_pix_fmt(false, 0),
+                FourCC::BG16 => Rgb565Formats::to_pix_fmt(true, 0),
+                FourCC::RGB8 => Rgb332Formats::to_pix_fmt(false, 0),
+                FourCC::BGR8 => Rgb332Formats::to_pix_fmt(true, 0),
+            }
+        }
+    }
 
     pub fn fourcc_to_pixel_format(fourcc: u32) -> Result<PixelFormat, PixelFormatError> {
-        match fourcc {
-            // little-endian xRGB
-            FOURCC_XR24 => Ok(PixelFormat {
-                bits_per_pixel: rgb_888::BITS_PER_PIXEL,
-                depth: rgb_888::DEPTH,
+        FourCC::try_from(fourcc).map(|fmt| PixelFormat::from(&fmt))
+    }
+}
+
+trait ColorConstants {
+    const BYTES_PER_PIXEL: usize = (Self::DEPTH as usize).next_power_of_two() / 8;
+    const BITS_PER_PIXEL: u8 = (Self::BYTES_PER_PIXEL * 8) as u8;
+
+    /// Number of bits used for color in a pixel
+    const DEPTH: u8 = Self::RED_BITS + Self::GREEN_BITS + Self::BLUE_BITS;
+
+    /// Number of bits used for red channel value
+    const RED_BITS: u8;
+    /// Number of bits used for green channel value
+    const GREEN_BITS: u8;
+    /// Number of bits used for blue channel value
+    const BLUE_BITS: u8;
+
+    /// Max value for red channel
+    const RED_MAX: u16 = (1u16 << Self::RED_BITS) - 1;
+    /// Max value for green channel
+    const GREEN_MAX: u16 = (1u16 << Self::GREEN_BITS) - 1;
+    /// Max value for blue channel
+    const BLUE_MAX: u16 = (1u16 << Self::BLUE_BITS) - 1;
+
+    /// Returns true if a shift as specified in a pixel format is valid for described formats.
+    fn valid_shift(shift: u8) -> bool;
+
+    /// Construct an appropriate PixelFormat definition for the given channel
+    /// ordering and base shift (e.g. BGRx 8:8:8:8 would be (true, 8))
+    fn to_pix_fmt(bgr_order: bool, base_shift: u8) -> PixelFormat {
+        if bgr_order {
+            PixelFormat {
+                bits_per_pixel: Self::BITS_PER_PIXEL,
+                depth: Self::DEPTH,
                 big_endian: false,
                 color_spec: ColorSpecification::ColorFormat(ColorFormat {
-                    red_max: rgb_888::MAX_VALUE,
-                    green_max: rgb_888::MAX_VALUE,
-                    blue_max: rgb_888::MAX_VALUE,
-                    red_shift: rgb_888::BITS_PER_COLOR * 2,
-                    green_shift: rgb_888::BITS_PER_COLOR * 1,
-                    blue_shift: rgb_888::BITS_PER_COLOR * 0,
+                    red_max: Self::RED_MAX,
+                    green_max: Self::GREEN_MAX,
+                    blue_max: Self::BLUE_MAX,
+                    red_shift: base_shift,
+                    green_shift: base_shift + Self::RED_BITS,
+                    blue_shift: base_shift + Self::RED_BITS + Self::GREEN_BITS,
                 }),
-            }),
-
-            // little-endian RGBx
-            FOURCC_RX24 => Ok(PixelFormat {
-                bits_per_pixel: rgb_888::BITS_PER_PIXEL,
-                depth: rgb_888::DEPTH,
+            }
+        } else {
+            PixelFormat {
+                bits_per_pixel: Self::BITS_PER_PIXEL,
+                depth: Self::DEPTH,
                 big_endian: false,
                 color_spec: ColorSpecification::ColorFormat(ColorFormat {
-                    red_max: rgb_888::MAX_VALUE,
-                    green_max: rgb_888::MAX_VALUE,
-                    blue_max: rgb_888::MAX_VALUE,
-                    red_shift: rgb_888::BITS_PER_COLOR * 3,
-                    green_shift: rgb_888::BITS_PER_COLOR * 2,
-                    blue_shift: rgb_888::BITS_PER_COLOR * 1,
+                    red_max: Self::RED_MAX,
+                    green_max: Self::GREEN_MAX,
+                    blue_max: Self::BLUE_MAX,
+                    red_shift: base_shift + Self::GREEN_BITS + Self::BLUE_BITS,
+                    green_shift: base_shift + Self::BLUE_BITS,
+                    blue_shift: base_shift,
                 }),
-            }),
-
-            // little-endian BGRx
-            FOURCC_BX24 => Ok(PixelFormat {
-                bits_per_pixel: rgb_888::BITS_PER_PIXEL,
-                depth: rgb_888::DEPTH,
-                big_endian: false,
-                color_spec: ColorSpecification::ColorFormat(ColorFormat {
-                    red_max: rgb_888::MAX_VALUE,
-                    green_max: rgb_888::MAX_VALUE,
-                    blue_max: rgb_888::MAX_VALUE,
-                    red_shift: rgb_888::BITS_PER_COLOR * 1,
-                    green_shift: rgb_888::BITS_PER_COLOR * 2,
-                    blue_shift: rgb_888::BITS_PER_COLOR * 3,
-                }),
-            }),
-
-            // little-endian xBGR
-            FOURCC_XB24 => Ok(PixelFormat {
-                bits_per_pixel: rgb_888::BITS_PER_PIXEL,
-                depth: rgb_888::DEPTH,
-                big_endian: false,
-                color_spec: ColorSpecification::ColorFormat(ColorFormat {
-                    red_max: rgb_888::MAX_VALUE,
-                    green_max: rgb_888::MAX_VALUE,
-                    blue_max: rgb_888::MAX_VALUE,
-                    red_shift: rgb_888::BITS_PER_COLOR * 0,
-                    green_shift: rgb_888::BITS_PER_COLOR * 1,
-                    blue_shift: rgb_888::BITS_PER_COLOR * 2,
-                }),
-            }),
-
-            v => Err(PixelFormatError::UnsupportedFourCc(v)),
+            }
         }
     }
 }
 
-/// Utility functions for 32-bit RGB pixel formats, with 8-bits used per color.
-pub mod rgb_888 {
-    use crate::rfb::{ColorSpecification, PixelFormat};
+struct Rgb888Formats;
+struct Rgb565Formats;
+struct Rgb332Formats;
 
-    pub const BYTES_PER_PIXEL: usize = 4;
-    pub const BITS_PER_PIXEL: u8 = 32;
+impl ColorConstants for Rgb888Formats {
+    const RED_BITS: u8 = 8;
+    const GREEN_BITS: u8 = 8;
+    const BLUE_BITS: u8 = 8;
+
+    fn valid_shift(shift: u8) -> bool {
+        shift == 0 || shift == 8 || shift == 16 || shift == 24
+    }
+}
+
+impl ColorConstants for Rgb565Formats {
+    const RED_BITS: u8 = 5;
+    const GREEN_BITS: u8 = 6;
+    const BLUE_BITS: u8 = 5;
+
+    fn valid_shift(shift: u8) -> bool {
+        shift == 0 || shift == 5 || shift == 11
+    }
+}
+
+impl ColorConstants for Rgb332Formats {
+    const RED_BITS: u8 = 3;
+    const GREEN_BITS: u8 = 3;
+    const BLUE_BITS: u8 = 2;
+
+    // not the most thorough
+    fn valid_shift(shift: u8) -> bool {
+        shift == 0 || shift == 2 || shift == 3 || shift == 5 || shift == 6
+    }
+}
+
+/// Utility functions for 32-bit RGB pixel formats, with 8-bits used per color.
+#[deprecated]
+pub mod rgb_888 {
+    pub use super::transform;
+    use crate::pixel_formats::{ColorConstants, Rgb888Formats};
+
+    pub const BYTES_PER_PIXEL: usize = Rgb888Formats::BYTES_PER_PIXEL;
+    pub const BITS_PER_PIXEL: u8 = Rgb888Formats::BITS_PER_PIXEL;
 
     /// Number of bits used for color in a pixel
-    pub const DEPTH: u8 = 24;
+    pub const DEPTH: u8 = Rgb888Formats::DEPTH;
 
     /// Number of bits used for a single color value
-    pub const BITS_PER_COLOR: u8 = 8;
+    pub const BITS_PER_COLOR: u8 = Rgb888Formats::RED_BITS;
 
     /// Max value for a given color
-    pub const MAX_VALUE: u16 = 255;
+    pub const MAX_VALUE: u16 = Rgb888Formats::RED_MAX;
 
     /// Returns true if a shift as specified in a pixel format is valid for rgb888 formats.
     pub fn valid_shift(shift: u8) -> bool {
-        shift == 0 || shift == 8 || shift == 16 || shift == 24
+        Rgb888Formats::valid_shift(shift)
     }
 
     /// Returns the byte index into a 4-byte pixel vector for a given color shift, accounting for endianness.
@@ -181,120 +273,79 @@ pub mod rgb_888 {
     pub fn unused_index(r: usize, g: usize, b: usize) -> usize {
         (3 + 2 + 1) - r - g - b
     }
+}
 
-    /// Given a set of red/green/blue shifts from a pixel format and its endianness, determine
-    /// which byte index in a 4-byte vector representing a pixel maps to which color.
-    ///
-    /// For example, for the shifts red=0, green=8, blue=16, and a little-endian format, the
-    /// indices would be red=0, green=1, blue=2, and x=3.
-    pub fn rgbx_index(
-        red_shift: u8,
-        green_shift: u8,
-        blue_shift: u8,
-        big_endian: bool,
-    ) -> (usize, usize, usize, usize) {
-        let r = color_shift_to_index(red_shift, big_endian);
-        let g = color_shift_to_index(green_shift, big_endian);
-        let b = color_shift_to_index(blue_shift, big_endian);
-        let x = unused_index(r, g, b);
-
-        (r, g, b, x)
+/// Translate between RGB formats.
+pub fn transform(pixels: &[u8], input: &PixelFormat, output: &PixelFormat) -> Vec<u8> {
+    if input == output {
+        return pixels.to_vec();
     }
 
-    /// Translate between RGB888 formats. The input and output format must both be RGB888.
-    pub fn transform(pixels: &Vec<u8>, input: &PixelFormat, output: &PixelFormat) -> Vec<u8> {
-        assert!(input.is_rgb_888());
-        assert!(output.is_rgb_888());
+    let in_bytes_pp = input.bits_per_pixel.next_power_of_two() as usize / 8;
+    let out_bytes_pp = output.bits_per_pixel.next_power_of_two() as usize / 8;
 
-        //let mut buf = Vec::with_capacity(pixels.len());
-        //buf.resize(pixels.len(), 0x0u8);
-        let mut buf = vec![0; pixels.len()];
+    let in_be_shift = 8 * (4 - in_bytes_pp);
+    let out_be_shift = 8 * (4 - out_bytes_pp);
 
-        let (ir, ig, ib, ix) = match &input.color_spec {
-            ColorSpecification::ColorFormat(cf) => rgbx_index(
-                cf.red_shift,
-                cf.green_shift,
-                cf.blue_shift,
-                input.big_endian,
-            ),
-            ColorSpecification::ColorMap(_) => {
-                unreachable!();
-            }
+    let mut buf = Vec::with_capacity(pixels.len() * in_bytes_pp / out_bytes_pp);
+
+    let ColorSpecification::ColorFormat(in_cf) = &input.color_spec else {
+        unimplemented!("converting from indexed color mode");
+    };
+    let ColorSpecification::ColorFormat(out_cf) = &input.color_spec else {
+        unimplemented!("converting to indexed color mode");
+    };
+
+    let mut i = 0;
+    while i < pixels.len() {
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&pixels[i..i + 4]);
+        let word = if input.big_endian {
+            u32::from_be_bytes(bytes) >> in_be_shift
+        } else {
+            u32::from_le_bytes(bytes)
         };
 
-        let (or, og, ob, ox) = match &output.color_spec {
-            ColorSpecification::ColorFormat(cf) => rgbx_index(
-                cf.red_shift,
-                cf.green_shift,
-                cf.blue_shift,
-                output.big_endian,
-            ),
-            ColorSpecification::ColorMap(_) => {
-                unreachable!();
-            }
+        // shift and mask
+        let ir_raw = (word >> in_cf.red_shift) & in_cf.red_max as u32;
+        let ig_raw = (word >> in_cf.green_shift) & in_cf.green_max as u32;
+        let ib_raw = (word >> in_cf.blue_shift) & in_cf.blue_max as u32;
+
+        // convert to new range
+        let ir = ir_raw * out_cf.red_max as u32 / in_cf.red_max as u32;
+        let ig = ig_raw * out_cf.green_max as u32 / in_cf.green_max as u32;
+        let ib = ib_raw * out_cf.blue_max as u32 / in_cf.blue_max as u32;
+
+        let or = ir << out_cf.red_shift;
+        let og = ig << out_cf.green_shift;
+        let ob = ib << out_cf.blue_shift;
+        let word = or | og | ob;
+        let bytes = if output.big_endian {
+            (word << out_be_shift).to_be_bytes()
+        } else {
+            word.to_le_bytes()
         };
+        buf.extend(&bytes[..out_bytes_pp]);
 
-        let mut i = 0;
-        while i < pixels.len() {
-            // Get the value for each color from the input...
-            let r = pixels[i + ir];
-            let g = pixels[i + ig];
-            let b = pixels[i + ib];
-            let x = pixels[i + ix];
-
-            // and assign it to the right spot in the output pixel
-            buf[i + or] = r;
-            buf[i + og] = g;
-            buf[i + ob] = b;
-            buf[i + ox] = x;
-
-            i += 4;
-        }
-
-        buf
+        i += in_bytes_pp;
     }
+
+    buf
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::pixel_formats::rgb_888::{color_shift_to_index, rgbx_index};
-
-    use super::{fourcc, rgb_888::transform};
+    use super::{fourcc, transform};
 
     #[test]
-    fn test_color_shift_to_index() {
-        assert_eq!(color_shift_to_index(0, false), 0);
-        assert_eq!(color_shift_to_index(8, false), 1);
-        assert_eq!(color_shift_to_index(16, false), 2);
-        assert_eq!(color_shift_to_index(24, false), 3);
-
-        assert_eq!(color_shift_to_index(0, true), 3);
-        assert_eq!(color_shift_to_index(8, true), 2);
-        assert_eq!(color_shift_to_index(16, true), 1);
-        assert_eq!(color_shift_to_index(24, true), 0);
-    }
-
-    #[test]
-    fn test_rgbx_index() {
-        assert_eq!(rgbx_index(0, 8, 16, false), (0, 1, 2, 3));
-        assert_eq!(rgbx_index(0, 8, 16, true), (3, 2, 1, 0));
-
-        assert_eq!(rgbx_index(8, 16, 24, false), (1, 2, 3, 0));
-        assert_eq!(rgbx_index(8, 16, 24, true), (2, 1, 0, 3));
-
-        assert_eq!(rgbx_index(0, 16, 24, false), (0, 2, 3, 1));
-        assert_eq!(rgbx_index(0, 16, 24, true), (3, 1, 0, 2));
-
-        assert_eq!(rgbx_index(8, 16, 24, false), (1, 2, 3, 0));
-        assert_eq!(rgbx_index(8, 16, 24, true), (2, 1, 0, 3));
-
-        assert_eq!(rgbx_index(0, 24, 8, false), (0, 3, 1, 2));
-        assert_eq!(rgbx_index(0, 24, 8, true), (3, 0, 2, 1));
-    }
-
-    #[test]
-    fn test_rgb888_transform() {
-        let pixels = vec![0u8, 1u8, 2u8, 3u8];
+    fn test_rgb_transform() {
+        #[rustfmt::skip]
+        let pixels = vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x12, 0x34, 0x56, 0x78,
+            0x9A, 0xBC, 0xDE, 0xF0,
+            0xFF, 0xFF, 0xFF, 0xFF,
+        ];
 
         // little-endian xRGB
         let xrgb_le = fourcc::fourcc_to_pixel_format(fourcc::FOURCC_XR24).unwrap();
@@ -314,32 +365,50 @@ mod tests {
         assert_eq!(transform(&pixels, &bgrx_le, &bgrx_le), pixels);
         assert_eq!(transform(&pixels, &xbgr_le, &xbgr_le), pixels);
 
+        // in all examples below, the 'x' non-channel value is dropped (zeroed)
+
         // little-endian xRGB -> little-endian RGBx
         //  B  G  R  x            x  B  G  R
-        // [0, 1, 2, 3]       -> [3, 0, 1, 2]
-        let p2 = vec![3u8, 0u8, 1u8, 2u8];
+        // [0, 1, 2, 3]       -> [0, 0, 1, 2]
+        #[rustfmt::skip]
+        let p2 = vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x12, 0x34, 0x56,
+            0x00, 0x9A, 0xBC, 0xDE,
+            0x00, 0xFF, 0xFF, 0xFF,
+        ];
         assert_eq!(transform(&pixels, &xrgb_le, &rgbx_le), p2);
 
         // little-endian RGBx -> little-endian xRGB
         //  x  B  G  R            B  G  R  x
         // [0, 1, 2, 3]       -> [1, 2, 3, 0]
-        let p3 = vec![1u8, 2u8, 3u8, 0u8];
+        #[rustfmt::skip]
+        let p3 = vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x34, 0x56, 0x78, 0x00,
+            0xBC, 0xDE, 0xF0, 0x00,
+            0xFF, 0xFF, 0xFF, 0x00,
+        ];
         assert_eq!(transform(&pixels, &rgbx_le, &xrgb_le), p3);
+        // little-endian BGRx -> little-endian xBGR
+        //  x  R  G  B            R  G  B  x
+        // [0, 1, 2, 3]       -> [1, 2, 3, 0]
+        assert_eq!(transform(&pixels, &bgrx_le, &xbgr_le), p3);
 
         // little-endian xRGB -> little-endian BGRx
         //  B  G  R  x            x  R  G  B
-        // [0, 1, 2, 3]       -> [3, 2, 1, 0]
-        let p4 = vec![3u8, 2u8, 1u8, 0u8];
+        // [0, 1, 2, 3]       -> [0, 2, 1, 0]
+        #[rustfmt::skip]
+        let p4 = vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x56, 0x34, 0x12,
+            0x00, 0xF0, 0xDE, 0xBC,
+            0x00, 0xFF, 0xFF, 0xFF,
+        ];
         assert_eq!(transform(&pixels, &xrgb_le, &bgrx_le), p4);
         // little-endian BGRx -> little-endian xRGB
         //  x  R  G  B            B  G  R  x
         // [0, 1, 2, 3]       -> [3, 2, 1, 0]
         assert_eq!(transform(&pixels, &bgrx_le, &xrgb_le), p4);
-
-        // little-endian BGRx -> little-endian xBGR
-        //  x  R  G  B            R  G  B  x
-        // [0, 1, 2, 3]       -> [1, 2, 3, 0]
-        let p5 = vec![1u8, 2u8, 3u8, 0u8];
-        assert_eq!(transform(&pixels, &bgrx_le, &xbgr_le), p5);
     }
 }
