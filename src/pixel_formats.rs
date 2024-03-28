@@ -437,13 +437,21 @@ mod tests {
         let p4 = vec![
             0x00, 0x00, 0x00, 0x00,
             0x00, 0x56, 0x34, 0x12,
-            0x00, 0xF0, 0xDE, 0xBC,
+            0x00, 0xDE, 0xBC, 0x9A,
             0x00, 0xFF, 0xFF, 0xFF,
         ];
         assert_eq!(transform(&pixels, &xrgb_le, &bgrx_le), p4);
+
         // little-endian BGRx -> little-endian xRGB
         //  x  R  G  B            B  G  R  x
         // [0, 1, 2, 3]       -> [3, 2, 1, 0]
-        assert_eq!(transform(&pixels, &bgrx_le, &xrgb_le), p4);
+        #[rustfmt::skip]
+        let p5 = vec![
+            0x00, 0x00, 0x00, 0x00,
+            0x78, 0x56, 0x34, 0x00,
+            0xF0, 0xDE, 0xBC, 0x00,
+            0xFF, 0xFF, 0xFF, 0x00,
+        ];
+        assert_eq!(transform(&pixels, &bgrx_le, &xrgb_le), p5);
     }
 }
