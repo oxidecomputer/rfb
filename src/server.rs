@@ -10,19 +10,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::FutureExt;
 use futures::future::Shared;
+use futures::FutureExt;
 use log::{debug, error, info, trace};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion,
-    ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes, ServerInit,
-    WriteMessage,
+    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, PointerEvent,
+    ProtoVersion, ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes,
+    ServerInit, WriteMessage,
 };
 
 #[derive(Debug, Error)]
@@ -81,6 +81,7 @@ pub struct VncServer<S: Server> {
 pub trait Server: Sync + Send + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
     async fn key_event(&self, _ke: KeyEvent) {}
+    async fn pointer_event(&self, _pe: PointerEvent) {}
     async fn stop(&self) {}
 }
 
@@ -183,7 +184,12 @@ impl<S: Server> VncServer<S> {
         Ok(())
     }
 
-    async fn handle_conn(&self, s: &mut TcpStream, addr: SocketAddr, mut close_ch: Shared<oneshot::Receiver<()>>) {
+    async fn handle_conn(
+        &self,
+        s: &mut TcpStream,
+        addr: SocketAddr,
+        mut close_ch: Shared<oneshot::Receiver<()>>,
+    ) {
         info!("[{:?}] new connection", addr);
 
         if let Err(e) = self.rfb_handshake(s, addr).await {
@@ -238,21 +244,18 @@ impl<S: Server> VncServer<S> {
                         // For now, we only support transformations between 4-byte RGB formats, so
                         // if the requested format isn't one of those, we'll just leave the pixels
                         // as is.
-                        if data.input_pixel_format != output_pixel_format
-                            && data.input_pixel_format.is_rgb_888()
-                            && output_pixel_format.is_rgb_888()
+                        if data.input_pixel_format == output_pixel_format {
+                            debug!("no input transformation needed");
+                        } else if data.input_pixel_format.is_supported()
+                            && output_pixel_format.is_supported()
                         {
                             debug!(
                                 "transforming: input={:#?}, output={:#?}",
                                 data.input_pixel_format, output_pixel_format
                             );
                             fbu = fbu.transform(&data.input_pixel_format, &output_pixel_format);
-                        } else if !(data.input_pixel_format.is_rgb_888()
-                            && output_pixel_format.is_rgb_888())
-                        {
-                            debug!("cannot transform between pixel formats (not rgb888): input.is_rgb_888()={}, output.is_rgb_888()={}", data.input_pixel_format.is_rgb_888(), output_pixel_format.is_rgb_888());
                         } else {
-                            debug!("no input transformation needed");
+                            debug!("cannot transform between pixel formats: input.is_supported()={}, output.is_supported()={}", data.input_pixel_format.is_supported(), output_pixel_format.is_supported());
                         }
 
                         if let Err(e) = fbu.write_to(s).await {
@@ -270,6 +273,7 @@ impl<S: Server> VncServer<S> {
                     }
                     ClientMessage::PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);
+                        self.server.pointer_event(pe).await;
                     }
                     ClientMessage::ClientCutText(t) => {
                         trace!("Rx [{:?}: ClientCutText={:?}", addr, t);
@@ -289,7 +293,10 @@ impl<S: Server> VncServer<S> {
 
         // Create a channel to signal the server to stop.
         let (close_tx, close_rx) = oneshot::channel();
-        assert!(self.stop_ch.lock().await.replace(close_tx).is_none(), "server already started");
+        assert!(
+            self.stop_ch.lock().await.replace(close_tx).is_none(),
+            "server already started"
+        );
         let mut close_rx = close_rx.shared();
 
         loop {
@@ -309,7 +316,9 @@ impl<S: Server> VncServer<S> {
             let close_rx = close_rx.clone();
             let server = self.clone();
             tokio::spawn(async move {
-                server.handle_conn(&mut client_sock, client_addr, close_rx).await;
+                server
+                    .handle_conn(&mut client_sock, client_addr, close_rx)
+                    .await;
             });
         }
     }
