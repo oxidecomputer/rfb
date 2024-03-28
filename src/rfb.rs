@@ -244,9 +244,9 @@ impl FramebufferUpdate {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct Position {
-    x: u16,
-    y: u16,
+pub struct Position {
+    pub x: u16,
+    pub y: u16,
 }
 
 impl ReadMessage for Position {
@@ -717,7 +717,7 @@ impl KeyEvent {
 }
 
 bitflags! {
-    struct MouseButtons: u8 {
+    pub struct MouseButtons: u8 {
         const LEFT = 1 << 0;
         const MIDDLE = 1 << 1;
         const RIGHT = 1 << 2;
@@ -729,10 +729,9 @@ bitflags! {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct PointerEvent {
-    position: Position,
-    pressed: MouseButtons,
+    pub position: Position,
+    pub pressed: MouseButtons,
 }
 
 impl ReadMessage for PointerEvent {
