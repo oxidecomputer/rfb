@@ -243,21 +243,18 @@ impl<S: Server> VncServer<S> {
                         // For now, we only support transformations between 4-byte RGB formats, so
                         // if the requested format isn't one of those, we'll just leave the pixels
                         // as is.
-                        if data.input_pixel_format != output_pixel_format
-                            && data.input_pixel_format.is_rgb_888()
-                            && output_pixel_format.is_rgb_888()
+                        if data.input_pixel_format == output_pixel_format {
+                            debug!("no input transformation needed");
+                        } else if data.input_pixel_format.is_supported()
+                            && output_pixel_format.is_supported()
                         {
                             debug!(
                                 "transforming: input={:#?}, output={:#?}",
                                 data.input_pixel_format, output_pixel_format
                             );
                             fbu = fbu.transform(&data.input_pixel_format, &output_pixel_format);
-                        } else if !(data.input_pixel_format.is_rgb_888()
-                            && output_pixel_format.is_rgb_888())
-                        {
-                            debug!("cannot transform between pixel formats (not rgb888): input.is_rgb_888()={}, output.is_rgb_888()={}", data.input_pixel_format.is_rgb_888(), output_pixel_format.is_rgb_888());
                         } else {
-                            debug!("no input transformation needed");
+                            debug!("cannot transform between pixel formats: input.is_supported()={}, output.is_supported()={}", data.input_pixel_format.is_supported(), output_pixel_format.is_supported());
                         }
 
                         if let Err(e) = fbu.write_to(s).await {

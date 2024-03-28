@@ -13,7 +13,6 @@ use tokio::net::TcpStream;
 
 use crate::encodings::{Encoding, EncodingType};
 use crate::keysym::KeySym;
-use crate::pixel_formats::rgb_888;
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -391,7 +390,7 @@ pub struct PixelFormat {
 impl PixelFormat {
     /// Constructor for a PixelFormat that uses a color format to specify colors.
     pub fn new_colorformat(
-        bbp: u8,
+        bpp: u8,
         depth: u8,
         big_endian: bool,
         red_shift: u8,
@@ -402,7 +401,7 @@ impl PixelFormat {
         blue_max: u16,
     ) -> Self {
         PixelFormat {
-            bits_per_pixel: bbp,
+            bits_per_pixel: bpp,
             depth,
             big_endian,
             color_spec: ColorSpecification::ColorFormat(ColorFormat {
@@ -417,22 +416,40 @@ impl PixelFormat {
     }
 
     /// Returns true if the pixel format is RGB888 (8-bits per color and 32 bits per pixel).
+    #[deprecated]
     pub fn is_rgb_888(&self) -> bool {
-        if self.bits_per_pixel != rgb_888::BITS_PER_PIXEL || self.depth != rgb_888::DEPTH {
-            return false;
-        }
+        #[allow(deprecated)]
+        {
+            use crate::pixel_formats::rgb_888;
 
-        match &self.color_spec {
-            ColorSpecification::ColorFormat(cf) => {
-                (cf.red_max == rgb_888::MAX_VALUE)
-                    && (cf.green_max == rgb_888::MAX_VALUE)
-                    && (cf.blue_max == rgb_888::MAX_VALUE)
-                    && (rgb_888::valid_shift(cf.red_shift))
-                    && (rgb_888::valid_shift(cf.green_shift))
-                    && (rgb_888::valid_shift(cf.blue_shift))
+            if self.bits_per_pixel != rgb_888::BITS_PER_PIXEL || self.depth != rgb_888::DEPTH {
+                return false;
             }
-            ColorSpecification::ColorMap(_) => false,
+
+            match &self.color_spec {
+                ColorSpecification::ColorFormat(cf) => {
+                    (cf.red_max == rgb_888::MAX_VALUE)
+                        && (cf.green_max == rgb_888::MAX_VALUE)
+                        && (cf.blue_max == rgb_888::MAX_VALUE)
+                        && (rgb_888::valid_shift(cf.red_shift))
+                        && (rgb_888::valid_shift(cf.green_shift))
+                        && (rgb_888::valid_shift(cf.blue_shift))
+                }
+                ColorSpecification::ColorMap(_) => false,
+            }
         }
+    }
+
+    /// Returns true if the pixel format is supported (currently only certain
+    /// variants of RGB888, RGB565, and RGB332).
+    pub fn is_supported(&self) -> bool {
+        for fcc in crate::pixel_formats::fourcc::SUPPORTED {
+            let fmt: PixelFormat = fcc.into();
+            if *self == fmt {
+                return true;
+            }
+        }
+        return false;
     }
 }
 
@@ -482,7 +499,6 @@ impl WriteMessage for PixelFormat {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum ColorSpecification {
     ColorFormat(ColorFormat),
     ColorMap(ColorMap), // TODO: implement

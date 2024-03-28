@@ -4,7 +4,7 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use env_logger;
@@ -12,13 +12,12 @@ use image::io::Reader as ImageReader;
 use image::GenericImageView;
 use log::info;
 use rfb::encodings::RawEncoding;
+use rfb::pixel_formats::fourcc::FourCC;
+use rfb::pixel_formats::transform;
 use rfb::rfb::{
     FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
 };
-use rfb::{
-    pixel_formats::rgb_888,
-    server::{Server, VncServer, VncServerConfig, VncServerData},
-};
+use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 const WIDTH: usize = 1024;
@@ -43,21 +42,9 @@ struct Args {
     #[clap(value_enum, short, long, default_value_t = Image::Oxide)]
     image: Image,
 
-    /// Pixel endianness
-    #[clap(long, default_value_t = false, action = clap::ArgAction::Set)]
-    big_endian: bool,
-
-    /// Byte mapping to red (4-byte RGB pixel, endian-agnostic)
-    #[clap(short, long, default_value_t = 0)]
-    red_order: u8,
-
-    /// Byte mapping to green (4-byte RGB pixel, endian-agnostic)
-    #[clap(short, long, default_value_t = 1)]
-    green_order: u8,
-
-    /// Byte mapping to blue (4-byte RGB pixel, endian-agnostic)
-    #[clap(short, long, default_value_t = 2)]
-    blue_order: u8,
+    /// Pixel format
+    #[clap(short, long, default_value = "XR24", action = clap::ArgAction::Set)]
+    fourcc: FourCC,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone)]
@@ -74,8 +61,7 @@ enum Image {
 #[derive(Clone)]
 struct ExampleServer {
     display: Image,
-    rgb_order: (u8, u8, u8),
-    big_endian: bool,
+    pixfmt: PixelFormat,
 }
 
 #[tokio::main]
@@ -83,22 +69,11 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    validate_order(args.red_order, args.green_order, args.blue_order)?;
 
-    let pf = PixelFormat::new_colorformat(
-        rgb_888::BITS_PER_PIXEL,
-        rgb_888::DEPTH,
-        args.big_endian,
-        order_to_shift(args.red_order),
-        rgb_888::MAX_VALUE,
-        order_to_shift(args.green_order),
-        rgb_888::MAX_VALUE,
-        order_to_shift(args.blue_order),
-        rgb_888::MAX_VALUE,
-    );
+    let pixfmt = PixelFormat::from(&args.fourcc);
     info!(
         "Starting server: image: {:?}, pixel format; {:#?}",
-        args.image, pf
+        args.image, pixfmt
     );
 
     let config = VncServerConfig {
@@ -110,12 +85,11 @@ async fn main() -> Result<()> {
     let data = VncServerData {
         width: WIDTH as u16,
         height: HEIGHT as u16,
-        input_pixel_format: pf.clone(),
+        input_pixel_format: pixfmt.clone(),
     };
     let server = ExampleServer {
         display: args.image,
-        rgb_order: (args.red_order, args.green_order, args.blue_order),
-        big_endian: args.big_endian,
+        pixfmt,
     };
     let s = VncServer::new(server, config, data);
     s.start().await?;
@@ -123,97 +97,57 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn validate_order(r: u8, g: u8, b: u8) -> Result<()> {
-    if r > 3 || g > 3 || b > 3 {
-        bail!("r/g/b must have ordering of 0, 1, 2, or 3");
-    }
+fn generate_color(img: Image, pixfmt: &PixelFormat) -> Vec<u8> {
+    let bytes_pp = pixfmt.bits_per_pixel as usize / 8;
+    let len = WIDTH * HEIGHT * bytes_pp;
+    let mut pixels = Vec::with_capacity(len);
 
-    if r == g || r == b || g == b {
-        bail!("r/g/b must have unique orderings");
-    }
+    let color = match img {
+        Image::Red => 0xFF000000u32.to_le_bytes(),
+        Image::Green => 0x00FF0000u32.to_le_bytes(),
+        Image::Blue => 0x0000FF00u32.to_le_bytes(),
+        Image::White => 0xFFFFFF00u32.to_le_bytes(),
+        Image::Black => 0u32.to_le_bytes(),
+        _ => unreachable!(),
+    };
+    let bytes = transform(&color, &PixelFormat::from(&FourCC::RX24), pixfmt);
 
-    Ok(())
-}
-
-fn order_to_shift(order: u8) -> u8 {
-    assert!(order <= 3);
-    (3 - order) * rgb_888::BITS_PER_COLOR
-}
-
-fn order_to_index(order: u8, big_endian: bool) -> u8 {
-    assert!(order <= 3);
-
-    if big_endian {
-        order
-    } else {
-        4 - order - 1
-    }
-}
-
-fn generate_color(index: u8, big_endian: bool) -> Vec<u8> {
-    const LEN: usize = WIDTH * HEIGHT * rgb_888::BYTES_PER_PIXEL;
-    let mut pixels = vec![0x0u8; LEN];
-
-    let idx = order_to_index(index, big_endian);
-
-    let mut x = 0;
-    for i in 0..pixels.len() {
-        if x == idx {
-            pixels[i] = 0xff;
-        }
-
-        if x == 3 {
-            x = 0;
-        } else {
-            x += 1;
-        }
+    while pixels.len() < len {
+        pixels.extend(&bytes);
     }
 
     pixels
 }
 
-fn generate_image(name: &str, big_endian: bool, rgb_order: (u8, u8, u8)) -> Vec<u8> {
-    const LEN: usize = WIDTH * HEIGHT * rgb_888::BYTES_PER_PIXEL;
+fn generate_image(name: &str, pixfmt: &PixelFormat) -> Vec<u8> {
+    const RGBX24_BYTES_PP: usize = 4;
+    const LEN: usize = WIDTH * HEIGHT * RGBX24_BYTES_PP;
+
     let mut pixels = vec![0xffu8; LEN];
 
     let img = ImageReader::open(name).unwrap().decode().unwrap();
-
-    let (r, g, b) = rgb_order;
-    let r_idx = order_to_index(r, big_endian) as usize;
-    let g_idx = order_to_index(g, big_endian) as usize;
-    let b_idx = order_to_index(b, big_endian) as usize;
-    let x_idx = rgb_888::unused_index(r_idx, g_idx, b_idx);
 
     // Convert the input image pixels to the requested pixel format.
     for (x, y, pixel) in img.pixels() {
         let ux = x as usize;
         let uy = y as usize;
 
-        let y_offset = WIDTH * rgb_888::BYTES_PER_PIXEL;
-        let x_offset = ux * rgb_888::BYTES_PER_PIXEL;
+        let y_offset = WIDTH * RGBX24_BYTES_PP;
+        let x_offset = ux * RGBX24_BYTES_PP;
+        let offset = uy * y_offset + x_offset;
 
-        pixels[uy * y_offset + x_offset + r_idx] = pixel[0];
-        pixels[uy * y_offset + x_offset + g_idx] = pixel[1];
-        pixels[uy * y_offset + x_offset + b_idx] = pixel[2];
-        pixels[uy * y_offset + x_offset + x_idx] = pixel[3];
+        pixels[offset..offset + 4].copy_from_slice(&pixel.0);
     }
-
-    pixels
+    transform(&pixels, &PixelFormat::from(&FourCC::XB24), pixfmt)
 }
 
-fn generate_pixels(img: Image, big_endian: bool, rgb_order: (u8, u8, u8)) -> Vec<u8> {
-    const LEN: usize = WIDTH * HEIGHT * rgb_888::BYTES_PER_PIXEL;
-
-    let (r, g, b) = rgb_order;
-
+fn generate_pixels(img: Image, pixfmt: &PixelFormat) -> Vec<u8> {
     match img {
-        Image::Oxide => generate_image("example-images/oxide.jpg", big_endian, rgb_order),
-        Image::TestTubes => generate_image("example-images/test-tubes.jpg", big_endian, rgb_order),
-        Image::Red => generate_color(r, big_endian),
-        Image::Green => generate_color(g, big_endian),
-        Image::Blue => generate_color(b, big_endian),
-        Image::White => vec![0xffu8; LEN],
-        Image::Black => vec![0x0u8; LEN],
+        Image::Oxide => generate_image("example-images/oxide.jpg", pixfmt),
+        Image::TestTubes => generate_image("example-images/test-tubes.jpg", pixfmt),
+        Image::Red | Image::Green | Image::Blue | Image::White | Image::Black => {
+            generate_color(img, pixfmt)
+        }
     }
 }
 
@@ -222,7 +156,7 @@ impl Server for ExampleServer {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate {
         let pixels_width = 1024;
         let pixels_height = 768;
-        let pixels = generate_pixels(self.display, self.big_endian, self.rgb_order);
+        let pixels = generate_pixels(self.display, &self.pixfmt);
         let r = Rectangle::new(
             0,
             0,

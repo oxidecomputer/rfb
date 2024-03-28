@@ -59,6 +59,8 @@ use crate::rfb::{ColorFormat, ColorSpecification, PixelFormat};
 pub enum PixelFormatError {
     #[error("unsupported or unknown fourcc: 0x{0:x}")]
     UnsupportedFourCc(u32),
+    #[error("invalid fourcc name: {0}")]
+    InvalidFourCcString(String),
 }
 
 ///  Utility functions and constants related to fourcc codes.
@@ -73,31 +75,44 @@ pub mod fourcc {
     use super::{ColorConstants, PixelFormatError};
     use crate::pixel_formats::{Rgb332Formats, Rgb565Formats, Rgb888Formats};
     use crate::rfb::PixelFormat;
+    use std::str::FromStr;
 
+    #[derive(Copy, Clone, Debug)]
     #[repr(u32)]
     pub enum FourCC {
         /// little-endian xRGB, 8:8:8:8
-        XR24 = u32::from_ne_bytes(*b"XR24"),
+        XR24 = u32::from_le_bytes(*b"XR24"),
         /// little-endian RGBx, 8:8:8:8
-        RX24 = u32::from_ne_bytes(*b"RX24"),
+        RX24 = u32::from_le_bytes(*b"RX24"),
         /// little-endian xBGR, 8:8:8:8
-        XB24 = u32::from_ne_bytes(*b"XB24"),
+        XB24 = u32::from_le_bytes(*b"XB24"),
         /// little-endian BGRx, 8:8:8:8
-        BX24 = u32::from_ne_bytes(*b"BX24"),
+        BX24 = u32::from_le_bytes(*b"BX24"),
         /// little-endian RGB, 5:6:5
-        RG16 = u32::from_ne_bytes(*b"RG16"),
+        RG16 = u32::from_le_bytes(*b"RG16"),
         /// little-endian BGR, 5:6:5
-        BG16 = u32::from_ne_bytes(*b"BG16"),
+        BG16 = u32::from_le_bytes(*b"BG16"),
         /// RGB, 3:3:2
-        RGB8 = u32::from_ne_bytes(*b"RGB8"),
+        RGB8 = u32::from_le_bytes(*b"RGB8"),
         /// BGR, 2:3:3
-        BGR8 = u32::from_ne_bytes(*b"BGR8"),
+        BGR8 = u32::from_le_bytes(*b"BGR8"),
     }
+
+    pub const SUPPORTED: &[FourCC] = &[
+        FourCC::XR24,
+        FourCC::RX24,
+        FourCC::XB24,
+        FourCC::BX24,
+        FourCC::RG16,
+        FourCC::BG16,
+        FourCC::RGB8,
+        FourCC::BGR8,
+    ];
 
     pub const FOURCC_XR24: u32 = FourCC::XR24 as u32;
     pub const FOURCC_RX24: u32 = FourCC::RX24 as u32;
-    pub const FOURCC_BX24: u32 = FourCC::BX24 as u32;
     pub const FOURCC_XB24: u32 = FourCC::XB24 as u32;
+    pub const FOURCC_BX24: u32 = FourCC::BX24 as u32;
     pub const FOURCC_RG16: u32 = FourCC::RG16 as u32;
     pub const FOURCC_BG16: u32 = FourCC::BG16 as u32;
     pub const FOURCC_RGB8: u32 = FourCC::RGB8 as u32;
@@ -118,6 +133,20 @@ pub mod fourcc {
                 FOURCC_BGR8 => Ok(FourCC::BGR8),
                 v => Err(PixelFormatError::UnsupportedFourCc(v)),
             }
+        }
+    }
+
+    impl FromStr for FourCC {
+        type Err = PixelFormatError;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            let mut bytes = [0u8; 4];
+            if s.as_bytes().len() != 4 {
+                return Err(PixelFormatError::InvalidFourCcString(s.to_string()));
+            }
+            bytes.copy_from_slice(s.as_bytes());
+            let word = u32::from_le_bytes(bytes);
+            Self::try_from(word)
         }
     }
 
@@ -292,18 +321,22 @@ pub fn transform(pixels: &[u8], input: &PixelFormat, output: &PixelFormat) -> Ve
     let ColorSpecification::ColorFormat(in_cf) = &input.color_spec else {
         unimplemented!("converting from indexed color mode");
     };
-    let ColorSpecification::ColorFormat(out_cf) = &input.color_spec else {
+    let ColorSpecification::ColorFormat(out_cf) = &output.color_spec else {
         unimplemented!("converting to indexed color mode");
     };
 
     let mut i = 0;
     while i < pixels.len() {
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(&pixels[i..i + 4]);
+        let mut in_bytes = [0u8; 4];
+        let mut k = 0;
+        for j in i..(i + 4).min(pixels.len()) {
+            in_bytes[k] = pixels[j];
+            k += 1;
+        }
         let word = if input.big_endian {
-            u32::from_be_bytes(bytes) >> in_be_shift
+            u32::from_be_bytes(in_bytes) >> in_be_shift
         } else {
-            u32::from_le_bytes(bytes)
+            u32::from_le_bytes(in_bytes)
         };
 
         // shift and mask
@@ -312,20 +345,22 @@ pub fn transform(pixels: &[u8], input: &PixelFormat, output: &PixelFormat) -> Ve
         let ib_raw = (word >> in_cf.blue_shift) & in_cf.blue_max as u32;
 
         // convert to new range
-        let ir = ir_raw * out_cf.red_max as u32 / in_cf.red_max as u32;
-        let ig = ig_raw * out_cf.green_max as u32 / in_cf.green_max as u32;
-        let ib = ib_raw * out_cf.blue_max as u32 / in_cf.blue_max as u32;
+        let or_raw = ir_raw * out_cf.red_max as u32 / in_cf.red_max as u32;
+        let og_raw = ig_raw * out_cf.green_max as u32 / in_cf.green_max as u32;
+        let ob_raw = ib_raw * out_cf.blue_max as u32 / in_cf.blue_max as u32;
 
-        let or = ir << out_cf.red_shift;
-        let og = ig << out_cf.green_shift;
-        let ob = ib << out_cf.blue_shift;
+        let or = or_raw << out_cf.red_shift;
+        let og = og_raw << out_cf.green_shift;
+        let ob = ob_raw << out_cf.blue_shift;
+
         let word = or | og | ob;
-        let bytes = if output.big_endian {
+
+        let out_bytes = if output.big_endian {
             (word << out_be_shift).to_be_bytes()
         } else {
             word.to_le_bytes()
         };
-        buf.extend(&bytes[..out_bytes_pp]);
+        buf.extend(&out_bytes[..out_bytes_pp]);
 
         i += in_bytes_pp;
     }
