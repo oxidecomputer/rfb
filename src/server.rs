@@ -20,9 +20,9 @@ use tokio::select;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion,
-    ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes, ServerInit,
-    WriteMessage,
+    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, PointerEvent,
+    ProtoVersion, ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes,
+    ServerInit, WriteMessage,
 };
 
 #[derive(Debug, Error)]
@@ -81,6 +81,7 @@ pub struct VncServer<S: Server> {
 pub trait Server: Sync + Send + 'static {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate;
     async fn key_event(&self, _ke: KeyEvent) {}
+    async fn pointer_event(&self, _pe: PointerEvent) {}
     async fn stop(&self) {}
 }
 
@@ -272,6 +273,7 @@ impl<S: Server> VncServer<S> {
                     }
                     ClientMessage::PointerEvent(pe) => {
                         trace!("Rx [{:?}: PointerEvent={:?}", addr, pe);
+                        self.server.pointer_event(pe).await;
                     }
                     ClientMessage::ClientCutText(t) => {
                         trace!("Rx [{:?}: ClientCutText={:?}", addr, t);
