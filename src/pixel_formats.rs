@@ -313,6 +313,7 @@ pub fn transform(pixels: &[u8], input: &PixelFormat, output: &PixelFormat) -> Ve
     let in_bytes_pp = input.bits_per_pixel.next_power_of_two() as usize / 8;
     let out_bytes_pp = output.bits_per_pixel.next_power_of_two() as usize / 8;
 
+    // regardless of byteorder, we still want to
     let in_be_shift = 8 * (4 - in_bytes_pp);
     let out_be_shift = 8 * (4 - out_bytes_pp);
 
@@ -344,10 +345,16 @@ pub fn transform(pixels: &[u8], input: &PixelFormat, output: &PixelFormat) -> Ve
         let ig_raw = (word >> in_cf.green_shift) & in_cf.green_max as u32;
         let ib_raw = (word >> in_cf.blue_shift) & in_cf.blue_max as u32;
 
-        // convert to new range
-        let or_raw = ir_raw * out_cf.red_max as u32 / in_cf.red_max as u32;
-        let og_raw = ig_raw * out_cf.green_max as u32 / in_cf.green_max as u32;
-        let ob_raw = ib_raw * out_cf.blue_max as u32 / in_cf.blue_max as u32;
+        // convert to new range (with rounding)
+        fn convert(c_in: u32, in_max: u16, out_max: u16) -> u32 {
+            let in_max = in_max as u32;
+            let out_max = out_max as u32;
+            ((c_in * out_max) + (in_max / 2)) / in_max
+        }
+
+        let or_raw = convert(ir_raw, in_cf.red_max, out_cf.red_max);
+        let og_raw = convert(ig_raw, in_cf.green_max, out_cf.green_max);
+        let ob_raw = convert(ib_raw, in_cf.blue_max, out_cf.blue_max);
 
         let or = or_raw << out_cf.red_shift;
         let og = og_raw << out_cf.green_shift;
