@@ -701,6 +701,7 @@ impl KeyEvent {
 }
 
 bitflags! {
+    #[derive(Debug)]
     struct MouseButtons: u8 {
         const LEFT = 1 << 0;
         const MIDDLE = 1 << 1;
