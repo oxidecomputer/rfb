@@ -469,6 +469,10 @@ impl ReadMessage for PixelFormat {
             let mut buf = [0u8; 3];
             stream.read_exact(&mut buf).await?;
 
+            if let ColorSpecification::ColorMap(..) = &color_spec {
+                todo!("SetColorMapEntries"); //.write_to(stream).await?;
+            }
+
             Ok(Self {
                 bits_per_pixel,
                 depth,
@@ -516,17 +520,16 @@ pub struct ColorFormat {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ColorMap {}
+pub struct ColorMap {
+    // we currently just use VESA_VGA_256_COLOR_PALETTE
+}
 
 impl ReadMessage for ColorSpecification {
     fn read_from<'a>(stream: &'a mut TcpStream) -> BoxFuture<'a, Result<Self, ProtocolError>> {
         async {
             let tc_flag = stream.read_u8().await?;
             match tc_flag {
-                0 => {
-                    // ColorMap
-                    unimplemented!()
-                }
+                0 => Ok(ColorSpecification::ColorMap(ColorMap {})),
                 _ => {
                     // ColorFormat
                     let red_max = stream.read_u16().await?;
@@ -567,7 +570,10 @@ impl WriteMessage for ColorSpecification {
                     stream.write_u8(cf.blue_shift).await?;
                 }
                 ColorSpecification::ColorMap(_cm) => {
-                    unimplemented!()
+                    // first 0 byte is true-color-flag = false;
+                    // the remaining 9 are the above max/shift fields,
+                    // which aren't relevant in ColorMap mode
+                    stream.write_all(&[0u8; 10]).await?;
                 }
             };
 
