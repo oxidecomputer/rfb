@@ -326,7 +326,7 @@ impl WriteMessage for Rectangle {
             stream.write_i32(encoding_type).await?;
 
             let data = self.data.encode();
-            stream.write_all(data).await?;
+            stream.write_all(&data).await?;
 
             Ok(())
         }
