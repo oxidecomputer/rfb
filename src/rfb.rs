@@ -263,8 +263,8 @@ impl ReadMessage for Position {
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Resolution {
-    width: u16,
-    height: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 impl ReadMessage for Resolution {
