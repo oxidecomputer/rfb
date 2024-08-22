@@ -4,6 +4,8 @@
 //
 // Copyright 2022 Oxide Computer Company
 
+use std::ops::BitOr;
+
 use bitflags::bitflags;
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -412,6 +414,24 @@ impl PixelFormat {
                 green_shift,
                 blue_shift,
             }),
+        }
+    }
+
+    pub fn value_mask(&self) -> Option<u64> {
+        match self.color_spec {
+            ColorSpecification::ColorFormat(ColorFormat {
+                red_max,
+                green_max,
+                blue_max,
+                red_shift,
+                green_shift,
+                blue_shift,
+            }) => Some(
+                ((red_max as u64) << red_shift)
+                    | ((green_max as u64) << green_shift)
+                    | ((blue_max as u64) << blue_shift),
+            ),
+            ColorSpecification::ColorMap(_) => None,
         }
     }
 

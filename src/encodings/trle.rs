@@ -1,13 +1,21 @@
 use std::iter::{from_fn, once};
 
 use crate::encodings::{Encoding, EncodingType};
+use crate::pixel_formats;
 use crate::rfb::PixelFormat;
 
 pub struct TRLEncoding {
     tiles: Vec<Vec<TRLETile>>,
 }
 
+impl TRLEncoding {
+    pub fn new(pixels: Vec<u8>, width: usize, height: usize) {
+        todo!()
+    }
+}
+
 #[repr(transparent)]
+#[derive(Copy, Clone)]
 struct PackedIndeces(u8);
 
 // impl From<&[u8; 2]> for PackedIndeces {
@@ -41,6 +49,7 @@ impl PackedIndeces {
 }
 
 // may be able to reuse this for ZRLE? (64px instead of 16px)
+#[derive(Clone)]
 enum TRLETile {
     /// 0
     Raw { pixels: Vec<CPixel> },
@@ -131,9 +140,55 @@ impl TRLETile {
     }
 }
 
+// TODO: [u8; 4] so we can derive Copy and go fast
+#[derive(Clone)]
 struct CPixel {
-    format: PixelFormat,
     bytes: Vec<u8>,
+}
+
+enum CPixelTransformType {
+    AsIs,
+    AppendZero,
+    PrependZero,
+}
+
+impl CPixel {
+    fn asdf(pixfmt: &PixelFormat) -> CPixelTransformType {
+        if pixfmt.depth <= 24 && pixfmt.bits_per_pixel == 32 {
+            let mask = pixfmt
+                .value_mask()
+                .expect("colormap not supported in cpixel");
+            let should_append = if mask.trailing_zeros() >= 8 {
+                false
+            } else if mask.leading_zeros() >= 8 {
+                true
+            } else {
+                return CPixelTransformType::AsIs;
+            } ^ pixfmt.big_endian;
+            if should_append {
+                CPixelTransformType::AppendZero
+            } else {
+                CPixelTransformType::PrependZero
+            }
+        } else {
+            CPixelTransformType::AsIs
+        }
+    }
+
+    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Self {
+        let in_bytes = match Self::asdf(input) {
+            CPixelTransformType::AsIs => &self.bytes,
+            CPixelTransformType::AppendZero => &self.bytes[0..=2],
+            CPixelTransformType::PrependZero => &self.bytes[1..=3],
+        };
+        let mut out_bytes = pixel_formats::transform(&in_bytes, input, output);
+        match Self::asdf(output) {
+            CPixelTransformType::AsIs => (),
+            CPixelTransformType::AppendZero => out_bytes.push(0u8),
+            CPixelTransformType::PrependZero => out_bytes.insert(0, 0u8),
+        }
+        Self { bytes: out_bytes }
+    }
 }
 
 impl Encoding for TRLEncoding {
@@ -149,6 +204,50 @@ impl Encoding for TRLEncoding {
     }
 
     fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding> {
-        todo!()
+        let tiles = self
+            .tiles
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|tile| match tile {
+                        TRLETile::Raw { pixels } => TRLETile::Raw {
+                            pixels: pixels
+                                .iter()
+                                .map(|cp| cp.transform(input, output))
+                                .collect(),
+                        },
+                        TRLETile::SolidColor { color } => TRLETile::SolidColor {
+                            color: color.transform(input, output),
+                        },
+                        TRLETile::PackedPalette {
+                            palette,
+                            packed_pixels,
+                        } => TRLETile::PackedPalette {
+                            palette: palette
+                                .iter()
+                                .map(|cp| cp.transform(input, output))
+                                .collect(),
+                            packed_pixels: packed_pixels.clone(),
+                        },
+                        TRLETile::PlainRLE { runs } => TRLETile::PlainRLE {
+                            runs: runs
+                                .iter()
+                                .map(|(cp, len)| (cp.transform(input, output), *len))
+                                .collect(),
+                        },
+                        TRLETile::PaletteRLE { palette, runs } => TRLETile::PaletteRLE {
+                            palette: palette
+                                .iter()
+                                .map(|cp| cp.transform(input, output))
+                                .collect(),
+                            runs: runs.clone(),
+                        },
+                        TRLETile::PackedPaletteReused { .. }
+                        | TRLETile::PaletteRLEReused { .. } => tile.clone(),
+                    })
+                    .collect()
+            })
+            .collect();
+        Box::new(Self { tiles })
     }
 }
