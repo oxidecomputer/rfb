@@ -7,6 +7,9 @@ use crate::{
 struct RREncoding {
     background_pixel: Pixel,
     sub_rectangles: Vec<RRESubrectangle>,
+    width: u16,
+    height: u16,
+    pixfmt: PixelFormat,
 }
 
 struct RRESubrectangle {
@@ -20,23 +23,27 @@ impl Encoding for RREncoding {
         EncodingType::RRE
     }
 
-    fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(
-            (self.sub_rectangles.len() + 1) * (self.background_pixel.bytes.len() + 8) - 4,
-        );
-        buf.extend_from_slice(&(self.sub_rectangles.len() as u32).to_be_bytes());
-        buf.extend_from_slice(&self.background_pixel.bytes);
-        for sr in &self.sub_rectangles {
-            buf.extend_from_slice(&sr.pixel.bytes);
-            buf.extend_from_slice(&sr.position.x.to_be_bytes());
-            buf.extend_from_slice(&sr.position.y.to_be_bytes());
-            buf.extend_from_slice(&sr.dimensions.width.to_be_bytes());
-            buf.extend_from_slice(&sr.dimensions.height.to_be_bytes());
-        }
-        buf
+    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            (self.sub_rectangles.len() as u32)
+                .to_be_bytes()
+                .into_iter()
+                .chain(self.background_pixel.bytes.iter().copied())
+                .chain(self.sub_rectangles.iter().flat_map(|sr| {
+                    sr.pixel
+                        .bytes
+                        .iter()
+                        .copied()
+                        .chain(sr.position.x.to_be_bytes().into_iter())
+                        .chain(sr.position.y.to_be_bytes().into_iter())
+                        .chain(sr.dimensions.width.to_be_bytes().into_iter())
+                        .chain(sr.dimensions.height.to_be_bytes().into_iter())
+                })),
+        )
     }
 
-    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding> {
+    fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
+        let input = &self.pixfmt;
         let background_pixel = Pixel {
             bytes: transform(&self.background_pixel.bytes, input, output),
         };
@@ -62,6 +69,17 @@ impl Encoding for RREncoding {
         Box::new(Self {
             background_pixel,
             sub_rectangles,
+            width: self.width,
+            height: self.height,
+            pixfmt: output.to_owned(),
         })
+    }
+
+    fn dimensions(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    fn pixel_format(&self) -> &PixelFormat {
+        &self.pixfmt
     }
 }

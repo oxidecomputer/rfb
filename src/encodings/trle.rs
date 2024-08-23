@@ -4,12 +4,18 @@ use crate::encodings::{Encoding, EncodingType};
 use crate::pixel_formats;
 use crate::rfb::PixelFormat;
 
+use super::RawEncoding;
+
 pub struct TRLEncoding {
     tiles: Vec<Vec<TRLETile>>,
+    width: u16,
+    height: u16,
+    pixfmt: PixelFormat,
 }
 
-impl TRLEncoding {
-    pub fn new(pixels: Vec<u8>, width: usize, height: usize) {
+impl From<&RawEncoding> for TRLEncoding {
+    fn from(raw: &RawEncoding) -> Self {
+        raw.raw_buffer();
         todo!()
     }
 }
@@ -97,7 +103,9 @@ fn pal_rle((index, length): &(u8, usize)) -> Box<dyn Iterator<Item = u8>> {
 }
 
 impl TRLETile {
-    /// Subencoding of the tile according to RFB 6143 7.7.5
+    /// Subencoding of the tile according to RFB 6143 7.7.5.
+    /// To the extent possible, this function is a translation of that
+    /// section of the RFB RFC from English into chained iterators.
     fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
         match self {
             TRLETile::Raw { pixels } => {
@@ -153,7 +161,7 @@ enum CPixelTransformType {
 }
 
 impl CPixel {
-    fn asdf(pixfmt: &PixelFormat) -> CPixelTransformType {
+    fn which_padding(pixfmt: &PixelFormat) -> CPixelTransformType {
         if pixfmt.depth <= 24 && pixfmt.bits_per_pixel == 32 {
             let mask = pixfmt
                 .value_mask()
@@ -176,13 +184,13 @@ impl CPixel {
     }
 
     fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Self {
-        let in_bytes = match Self::asdf(input) {
+        let in_bytes = match Self::which_padding(input) {
             CPixelTransformType::AsIs => &self.bytes,
             CPixelTransformType::AppendZero => &self.bytes[0..=2],
             CPixelTransformType::PrependZero => &self.bytes[1..=3],
         };
         let mut out_bytes = pixel_formats::transform(&in_bytes, input, output);
-        match Self::asdf(output) {
+        match Self::which_padding(output) {
             CPixelTransformType::AsIs => (),
             CPixelTransformType::AppendZero => out_bytes.push(0u8),
             CPixelTransformType::PrependZero => out_bytes.insert(0, 0u8),
@@ -196,14 +204,16 @@ impl Encoding for TRLEncoding {
         EncodingType::TRLE
     }
 
-    fn encode(&self) -> Vec<u8> {
-        self.tiles
-            .iter()
-            .flat_map(|row| row.iter().flat_map(|tile| tile.encode()))
-            .collect()
+    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            self.tiles
+                .iter()
+                .flat_map(|row| row.iter().flat_map(|tile| tile.encode())),
+        )
     }
 
-    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding> {
+    fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
+        let input = &self.pixfmt;
         let tiles = self
             .tiles
             .iter()
@@ -248,6 +258,19 @@ impl Encoding for TRLEncoding {
                     .collect()
             })
             .collect();
-        Box::new(Self { tiles })
+        Box::new(Self {
+            tiles,
+            width: self.width,
+            height: self.height,
+            pixfmt: output.to_owned(),
+        })
+    }
+
+    fn dimensions(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    fn pixel_format(&self) -> &PixelFormat {
+        &self.pixfmt
     }
 }

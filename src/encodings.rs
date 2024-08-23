@@ -46,11 +46,17 @@ where
 {
     fn get_type(&self) -> EncodingType;
 
-    /// Transform this encoding from its representation into a byte vector that can be passed to the client.
-    fn encode(&self) -> Vec<u8>;
+    /// Return the width and height in pixels of the encoded screen region.
+    fn dimensions(&self) -> (u16, u16);
 
-    /// Translates this encoding type from an input pixel format to an output format.
-    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding>;
+    /// Return the pixel format of this encoding's data.
+    fn pixel_format(&self) -> &PixelFormat;
+
+    /// Transform this encoding from its representation into a byte sequence that can be passed to the client.
+    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_>;
+
+    /// Translates this encoding type from its current pixel format to the given format.
+    fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding>;
 }
 
 impl From<EncodingType> for i32 {

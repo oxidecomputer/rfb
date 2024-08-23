@@ -162,7 +162,12 @@ impl Server for ExampleServer {
             0,
             pixels_width,
             pixels_height,
-            Box::new(RawEncoding::new(pixels)),
+            Box::new(RawEncoding::new(
+                pixels,
+                pixels_width,
+                pixels_height,
+                &self.pixfmt,
+            )),
         );
         FramebufferUpdate::new(vec![r])
     }

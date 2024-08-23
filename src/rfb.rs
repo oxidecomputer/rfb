@@ -4,8 +4,6 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use std::ops::BitOr;
-
 use bitflags::bitflags;
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -308,10 +306,12 @@ impl Rectangle {
     }
 
     pub fn transform(&self, input_pf: &PixelFormat, output_pf: &PixelFormat) -> Self {
+        // TODO: refactor out of method args here?
+        assert_eq!(input_pf, self.data.pixel_format());
         Rectangle {
             position: self.position,
             dimensions: self.dimensions,
-            data: self.data.transform(input_pf, output_pf),
+            data: self.data.transform(output_pf),
         }
     }
 }
@@ -327,7 +327,8 @@ impl WriteMessage for Rectangle {
             stream.write_u16(self.dimensions.height).await?;
             stream.write_i32(encoding_type).await?;
 
-            let data = self.data.encode();
+            // TODO: avoid collect alloc?
+            let data: Vec<_> = self.data.encode().collect();
             stream.write_all(&data).await?;
 
             Ok(())

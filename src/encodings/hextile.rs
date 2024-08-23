@@ -3,15 +3,25 @@ use crate::{
     rfb::PixelFormat,
 };
 
+use super::RawEncoding;
+
 #[allow(dead_code)]
 struct HextileEncoding {
     tiles: Vec<Vec<HextileTile>>,
+    width: u16,
+    height: u16,
+    pixfmt: PixelFormat,
 }
 
-impl HextileEncoding {
-    pub fn from_raw(raw: Vec<u8>) -> Self {
+impl From<&RawEncoding> for HextileEncoding {
+    fn from(raw: &RawEncoding) -> Self {
+        let pixfmt = raw.pixel_format().to_owned();
+        let (width, height) = raw.dimensions();
         Self {
             tiles: todo!("create subrects. need dimensions"),
+            width,
+            height,
+            pixfmt,
         }
     }
 }
@@ -31,17 +41,23 @@ impl Encoding for HextileEncoding {
         EncodingType::Hextile
     }
 
-    fn encode(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        for tile in &self.tiles {
+    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(self.tiles.iter().flat_map(|tile| {
             let subencoding_mask = todo!();
-            v.push(subencoding_mask)
-        }
-        v
+            [todo!()].into_iter()
+        }))
     }
 
-    fn transform(&self, input: &PixelFormat, output: &PixelFormat) -> Box<dyn Encoding> {
+    fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
         todo!()
+    }
+
+    fn dimensions(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    fn pixel_format(&self) -> &PixelFormat {
+        &self.pixfmt
     }
 }
 
