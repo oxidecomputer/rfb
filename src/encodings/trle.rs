@@ -13,8 +13,11 @@ pub struct RLEncoding<const PX: usize> {
     pixfmt: PixelFormat,
 }
 
-pub type TRLEncoding = RLEncoding<16>;
-pub struct ZRLEncoding(RLEncoding<64>);
+const TRLE_TILE_PX_SIZE: usize = 16;
+const ZRLE_TILE_PX_SIZE: usize = 64;
+
+pub type TRLEncoding = RLEncoding<TRLE_TILE_PX_SIZE>;
+pub struct ZRLEncoding(RLEncoding<ZRLE_TILE_PX_SIZE>);
 
 impl Encoding for ZRLEncoding {
     fn get_type(&self) -> EncodingType {
@@ -36,6 +39,20 @@ impl Encoding for ZRLEncoding {
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
         Box::new(Self(self.0.transform_inner(output)))
+    }
+}
+
+impl<'a> From<&RawEncodingRef<'a>> for ZRLEncoding {
+    fn from(raw: &RawEncodingRef) -> Self {
+        let (width, height) = raw.dimensions();
+        let tiles = from_rawenc_inner(raw, ZRLE_TILE_PX_SIZE, true);
+        let pixfmt = raw.pixel_format().to_owned();
+        Self(RLEncoding {
+            tiles,
+            width,
+            height,
+            pixfmt,
+        })
     }
 }
 
@@ -99,53 +116,63 @@ impl<const PX: usize> RLEncoding<PX> {
 
 impl<'a, const PX: usize> From<&RawEncodingRef<'a>> for RLEncoding<PX> {
     fn from(raw: &RawEncodingRef) -> Self {
-        let (w16, h16) = raw.dimensions();
-        let (width, height) = (w16 as usize, h16 as usize);
-
-        let pixfmt = raw.pixel_format();
-        let bytes_per_px = (pixfmt.bits_per_pixel as usize + 7) / 8;
-
-        let buf = raw.raw_buffer();
-
-        // if rect isn't a multiple of TILE_SIZE, we still encode the
-        // last partial tile. but if it *is* a multiple of TILE_SIZE,
-        // we don't -- hence inclusive range, but minus one before divide
-        let last_tile_row = (height - 1) / Self::TILE_PIXEL_SIZE;
-        let last_tile_col = (width - 1) / Self::TILE_PIXEL_SIZE;
-        let tiles = (0..=last_tile_row)
-            .into_iter()
-            .map(|tile_row_idx| {
-                let y_start = tile_row_idx * Self::TILE_PIXEL_SIZE;
-                let y_end = height.min((tile_row_idx + 1) * Self::TILE_PIXEL_SIZE);
-                (0..=last_tile_col)
-                    .into_iter()
-                    .map(move |tile_col_idx| {
-                        let x_start = tile_col_idx * Self::TILE_PIXEL_SIZE;
-                        let x_end = width.min((tile_col_idx + 1) * Self::TILE_PIXEL_SIZE);
-                        let tile_pixels = (y_start..y_end).into_iter().flat_map(move |y| {
-                            (x_start..x_end).into_iter().map(move |x| {
-                                let px_start = (y * width + x) * bytes_per_px;
-                                let px_end = (y * width + x + 1) * bytes_per_px;
-                                &buf[px_start..px_end]
-                            })
-                        });
-                        // TODO: other encodings
-                        TRLETile::Raw {
-                            pixels: tile_pixels
-                                .map(|px_bytes| CPixel::from_raw(px_bytes, pixfmt))
-                                .collect(),
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
+        let (width, height) = raw.dimensions();
+        let tiles = from_rawenc_inner(raw, Self::TILE_PIXEL_SIZE, true);
+        let pixfmt = raw.pixel_format().to_owned();
         Self {
             tiles,
-            width: w16,
-            height: h16,
-            pixfmt: pixfmt.clone(),
+            width,
+            height,
+            pixfmt,
         }
     }
+}
+
+fn from_rawenc_inner(
+    raw: &RawEncodingRef<'_>,
+    tile_px_size: usize,
+    allow_pal_reuse: bool,
+) -> Vec<Vec<TRLETile>> {
+    let (w16, h16) = raw.dimensions();
+    let (width, height) = (w16 as usize, h16 as usize);
+
+    let pixfmt = raw.pixel_format();
+    let bytes_per_px = (pixfmt.bits_per_pixel as usize + 7) / 8;
+
+    let buf = raw.raw_buffer();
+
+    // if rect isn't a multiple of TILE_SIZE, we still encode the
+    // last partial tile. but if it *is* a multiple of TILE_SIZE,
+    // we don't -- hence inclusive range, but minus one before divide
+    let last_tile_row = (height - 1) / tile_px_size;
+    let last_tile_col = (width - 1) / tile_px_size;
+    (0..=last_tile_row)
+        .into_iter()
+        .map(|tile_row_idx| {
+            let y_start = tile_row_idx * tile_px_size;
+            let y_end = height.min((tile_row_idx + 1) * tile_px_size);
+            (0..=last_tile_col)
+                .into_iter()
+                .map(move |tile_col_idx| {
+                    let x_start = tile_col_idx * tile_px_size;
+                    let x_end = width.min((tile_col_idx + 1) * tile_px_size);
+                    let tile_pixels = (y_start..y_end).into_iter().flat_map(move |y| {
+                        (x_start..x_end).into_iter().map(move |x| {
+                            let px_start = (y * width + x) * bytes_per_px;
+                            let px_end = (y * width + x + 1) * bytes_per_px;
+                            &buf[px_start..px_end]
+                        })
+                    });
+                    // TODO: other encodings
+                    TRLETile::Raw {
+                        pixels: tile_pixels
+                            .map(|px_bytes| CPixel::from_raw(px_bytes, pixfmt))
+                            .collect(),
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[repr(transparent)]

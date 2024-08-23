@@ -6,8 +6,8 @@ use crate::{
 
 /// Section 7.7.1
 pub struct RawEncoding {
-    pixels: Vec<u8>,
-    width: u16,
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) width: u16,
     height: u16,
     pixfmt: PixelFormat,
 }
@@ -20,6 +20,10 @@ impl RawEncoding {
             height,
             pixfmt: pixfmt.clone(),
         }
+    }
+
+    pub(crate) fn raw_buffer(&self) -> &[u8] {
+        &self.pixels
     }
 }
 

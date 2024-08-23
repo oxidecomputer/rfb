@@ -11,7 +11,7 @@ use env_logger;
 use image::io::Reader as ImageReader;
 use image::GenericImageView;
 use log::info;
-use rfb::encodings::{RawEncoding, RawEncodingRef, TRLEncoding};
+use rfb::encodings::{RawEncodingRef, ZRLEncoding};
 use rfb::pixel_formats::fourcc::FourCC;
 use rfb::pixel_formats::transform;
 use rfb::rfb::{
@@ -162,7 +162,7 @@ impl Server for ExampleServer {
             0,
             pixels_width,
             pixels_height,
-            Box::new(TRLEncoding::from(&RawEncodingRef::new(
+            Box::new(ZRLEncoding::from(&RawEncodingRef::new(
                 &pixels,
                 pixels_width,
                 pixels_height,

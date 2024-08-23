@@ -14,10 +14,13 @@ mod raw;
 #[allow(unused)]
 mod rre;
 mod trle;
+mod zlib;
 
 pub use raw::RawEncoding;
 pub use raw::RawEncodingRef;
 pub use trle::TRLEncoding;
+pub use trle::ZRLEncoding;
+pub use zlib::ZlibEncoding;
 
 #[derive(Debug)]
 #[allow(unused)]
