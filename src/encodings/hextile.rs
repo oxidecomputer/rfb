@@ -3,7 +3,7 @@ use crate::{
     rfb::PixelFormat,
 };
 
-use super::RawEncoding;
+use super::RawEncodingRef;
 
 #[allow(dead_code)]
 struct HextileEncoding {
@@ -13,8 +13,8 @@ struct HextileEncoding {
     pixfmt: PixelFormat,
 }
 
-impl From<&RawEncoding> for HextileEncoding {
-    fn from(raw: &RawEncoding) -> Self {
+impl From<&RawEncodingRef<'_>> for HextileEncoding {
+    fn from(raw: &RawEncodingRef) -> Self {
         let pixfmt = raw.pixel_format().to_owned();
         let (width, height) = raw.dimensions();
         Self {

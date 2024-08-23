@@ -16,6 +16,7 @@ mod rre;
 mod trle;
 
 pub use raw::RawEncoding;
+pub use raw::RawEncodingRef;
 
 #[derive(Debug)]
 #[allow(unused)]

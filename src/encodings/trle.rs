@@ -4,7 +4,7 @@ use crate::encodings::{Encoding, EncodingType};
 use crate::pixel_formats;
 use crate::rfb::PixelFormat;
 
-use super::RawEncoding;
+use super::RawEncodingRef;
 
 pub struct TRLEncoding {
     tiles: Vec<Vec<TRLETile>>,
@@ -13,8 +13,8 @@ pub struct TRLEncoding {
     pixfmt: PixelFormat,
 }
 
-impl From<&RawEncoding> for TRLEncoding {
-    fn from(raw: &RawEncoding) -> Self {
+impl<'a> From<&RawEncodingRef<'a>> for TRLEncoding {
+    fn from(raw: &RawEncodingRef) -> Self {
         raw.raw_buffer();
         todo!()
     }
