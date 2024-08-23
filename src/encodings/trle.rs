@@ -13,10 +13,55 @@ pub struct TRLEncoding {
     pixfmt: PixelFormat,
 }
 
+const TILE_PIXEL_SIZE: usize = 16;
 impl<'a> From<&RawEncodingRef<'a>> for TRLEncoding {
     fn from(raw: &RawEncodingRef) -> Self {
-        raw.raw_buffer();
-        todo!()
+        let (w16, h16) = raw.dimensions();
+        let (width, height) = (w16 as usize, h16 as usize);
+
+        let pixfmt = raw.pixel_format();
+        let bytes_per_px = (pixfmt.bits_per_pixel as usize + 7) / 8;
+
+        let buf = raw.raw_buffer();
+
+        // if rect isn't a multiple of TILE_SIZE, we still encode the
+        // last partial tile. but if it *is* a multiple of TILE_SIZE,
+        // we don't -- hence inclusive range, but minus one before divide
+        let last_tile_row = (height - 1) / TILE_PIXEL_SIZE;
+        let last_tile_col = (width - 1) / TILE_PIXEL_SIZE;
+        let tiles = (0..=last_tile_row)
+            .into_iter()
+            .map(|tile_row_idx| {
+                let y_start = tile_row_idx * TILE_PIXEL_SIZE;
+                let y_end = height.min((tile_row_idx + 1) * TILE_PIXEL_SIZE);
+                (0..=last_tile_col)
+                    .into_iter()
+                    .map(move |tile_col_idx| {
+                        let x_start = tile_col_idx * TILE_PIXEL_SIZE;
+                        let x_end = width.min((tile_col_idx + 1) * TILE_PIXEL_SIZE);
+                        let tile_pixels = (y_start..y_end).into_iter().flat_map(move |y| {
+                            (x_start..x_end).into_iter().map(move |x| {
+                                let px_start = (y * width + x) * bytes_per_px;
+                                let px_end = (y * width + x + 1) * bytes_per_px;
+                                &buf[px_start..px_end]
+                            })
+                        });
+                        // TODO: other encodings
+                        TRLETile::Raw {
+                            pixels: tile_pixels
+                                .map(|px_bytes| CPixel::from_raw(px_bytes, pixfmt))
+                                .collect(),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Self {
+            tiles,
+            width: w16,
+            height: h16,
+            pixfmt: pixfmt.clone(),
+        }
     }
 }
 
@@ -196,6 +241,20 @@ impl CPixel {
             CPixelTransformType::PrependZero => out_bytes.insert(0, 0u8),
         }
         Self { bytes: out_bytes }
+    }
+
+    fn from_raw<'a>(raw_bytes: &[u8], pixfmt: &PixelFormat) -> Self {
+        let mut bytes = raw_bytes.to_vec();
+        match Self::which_padding(pixfmt) {
+            CPixelTransformType::AsIs => (),
+            CPixelTransformType::AppendZero => {
+                bytes.pop();
+            }
+            CPixelTransformType::PrependZero => {
+                bytes.remove(0);
+            }
+        }
+        Self { bytes }
     }
 }
 

@@ -4,6 +4,8 @@ use crate::{
     rfb::{PixelFormat, Position, Resolution},
 };
 
+use super::RawEncodingRef;
+
 struct RREncoding {
     background_pixel: Pixel,
     sub_rectangles: Vec<RRESubrectangle>,
