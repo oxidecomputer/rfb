@@ -6,15 +6,98 @@ use crate::rfb::PixelFormat;
 
 use super::RawEncodingRef;
 
-pub struct TRLEncoding {
+pub struct RLEncoding<const PX: usize> {
     tiles: Vec<Vec<TRLETile>>,
     width: u16,
     height: u16,
     pixfmt: PixelFormat,
 }
 
-const TILE_PIXEL_SIZE: usize = 16;
-impl<'a> From<&RawEncodingRef<'a>> for TRLEncoding {
+pub type TRLEncoding = RLEncoding<16>;
+pub struct ZRLEncoding(RLEncoding<64>);
+
+impl Encoding for ZRLEncoding {
+    fn get_type(&self) -> EncodingType {
+        EncodingType::ZRLE
+    }
+
+    fn dimensions(&self) -> (u16, u16) {
+        self.0.dimensions()
+    }
+
+    fn pixel_format(&self) -> &PixelFormat {
+        self.0.pixel_format()
+    }
+
+    fn encode(&self /*, ctx: &mut ConnectionContext*/) -> Box<dyn Iterator<Item = u8> + '_> {
+        todo!("flate2 with zlib stream shared with stream (but flushed to byte boundary at end of this fn)");
+        todo!("also disable re-use of palettes in zrle mode")
+    }
+
+    fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
+        Box::new(Self(self.0.transform_inner(output)))
+    }
+}
+
+impl<const PX: usize> RLEncoding<PX> {
+    const TILE_PIXEL_SIZE: usize = PX;
+
+    fn transform_inner(&self, output: &PixelFormat) -> RLEncoding<PX> {
+        let input = &self.pixfmt;
+        let tiles = self
+            .tiles
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|tile| match tile {
+                        TRLETile::Raw { pixels } => TRLETile::Raw {
+                            pixels: pixels
+                                .iter()
+                                .map(|cp| cp.transform(input, output))
+                                .collect(),
+                        },
+                        TRLETile::SolidColor { color } => TRLETile::SolidColor {
+                            color: color.transform(input, output),
+                        },
+                        TRLETile::PackedPalette {
+                            palette,
+                            packed_pixels,
+                        } => TRLETile::PackedPalette {
+                            palette: palette
+                                .iter()
+                                .map(|cp| cp.transform(input, output))
+                                .collect(),
+                            packed_pixels: packed_pixels.clone(),
+                        },
+                        TRLETile::PlainRLE { runs } => TRLETile::PlainRLE {
+                            runs: runs
+                                .iter()
+                                .map(|(cp, len)| (cp.transform(input, output), *len))
+                                .collect(),
+                        },
+                        TRLETile::PaletteRLE { palette, runs } => TRLETile::PaletteRLE {
+                            palette: palette
+                                .iter()
+                                .map(|cp| cp.transform(input, output))
+                                .collect(),
+                            runs: runs.clone(),
+                        },
+                        TRLETile::PackedPaletteReused { .. }
+                        | TRLETile::PaletteRLEReused { .. } => tile.clone(),
+                    })
+                    .collect()
+            })
+            .collect();
+        Self {
+            tiles,
+            width: self.width,
+            height: self.height,
+            pixfmt: output.to_owned(),
+        }
+    }
+}
+
+impl<'a, const PX: usize> From<&RawEncodingRef<'a>> for RLEncoding<PX> {
     fn from(raw: &RawEncodingRef) -> Self {
         let (w16, h16) = raw.dimensions();
         let (width, height) = (w16 as usize, h16 as usize);
@@ -27,18 +110,18 @@ impl<'a> From<&RawEncodingRef<'a>> for TRLEncoding {
         // if rect isn't a multiple of TILE_SIZE, we still encode the
         // last partial tile. but if it *is* a multiple of TILE_SIZE,
         // we don't -- hence inclusive range, but minus one before divide
-        let last_tile_row = (height - 1) / TILE_PIXEL_SIZE;
-        let last_tile_col = (width - 1) / TILE_PIXEL_SIZE;
+        let last_tile_row = (height - 1) / Self::TILE_PIXEL_SIZE;
+        let last_tile_col = (width - 1) / Self::TILE_PIXEL_SIZE;
         let tiles = (0..=last_tile_row)
             .into_iter()
             .map(|tile_row_idx| {
-                let y_start = tile_row_idx * TILE_PIXEL_SIZE;
-                let y_end = height.min((tile_row_idx + 1) * TILE_PIXEL_SIZE);
+                let y_start = tile_row_idx * Self::TILE_PIXEL_SIZE;
+                let y_end = height.min((tile_row_idx + 1) * Self::TILE_PIXEL_SIZE);
                 (0..=last_tile_col)
                     .into_iter()
                     .map(move |tile_col_idx| {
-                        let x_start = tile_col_idx * TILE_PIXEL_SIZE;
-                        let x_end = width.min((tile_col_idx + 1) * TILE_PIXEL_SIZE);
+                        let x_start = tile_col_idx * Self::TILE_PIXEL_SIZE;
+                        let x_end = width.min((tile_col_idx + 1) * Self::TILE_PIXEL_SIZE);
                         let tile_pixels = (y_start..y_end).into_iter().flat_map(move |y| {
                             (x_start..x_end).into_iter().map(move |x| {
                                 let px_start = (y * width + x) * bytes_per_px;
@@ -258,7 +341,7 @@ impl CPixel {
     }
 }
 
-impl Encoding for TRLEncoding {
+impl<const PX: usize> Encoding for RLEncoding<PX> {
     fn get_type(&self) -> EncodingType {
         EncodingType::TRLE
     }
@@ -272,57 +355,7 @@ impl Encoding for TRLEncoding {
     }
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
-        let input = &self.pixfmt;
-        let tiles = self
-            .tiles
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|tile| match tile {
-                        TRLETile::Raw { pixels } => TRLETile::Raw {
-                            pixels: pixels
-                                .iter()
-                                .map(|cp| cp.transform(input, output))
-                                .collect(),
-                        },
-                        TRLETile::SolidColor { color } => TRLETile::SolidColor {
-                            color: color.transform(input, output),
-                        },
-                        TRLETile::PackedPalette {
-                            palette,
-                            packed_pixels,
-                        } => TRLETile::PackedPalette {
-                            palette: palette
-                                .iter()
-                                .map(|cp| cp.transform(input, output))
-                                .collect(),
-                            packed_pixels: packed_pixels.clone(),
-                        },
-                        TRLETile::PlainRLE { runs } => TRLETile::PlainRLE {
-                            runs: runs
-                                .iter()
-                                .map(|(cp, len)| (cp.transform(input, output), *len))
-                                .collect(),
-                        },
-                        TRLETile::PaletteRLE { palette, runs } => TRLETile::PaletteRLE {
-                            palette: palette
-                                .iter()
-                                .map(|cp| cp.transform(input, output))
-                                .collect(),
-                            runs: runs.clone(),
-                        },
-                        TRLETile::PackedPaletteReused { .. }
-                        | TRLETile::PaletteRLEReused { .. } => tile.clone(),
-                    })
-                    .collect()
-            })
-            .collect();
-        Box::new(Self {
-            tiles,
-            width: self.width,
-            height: self.height,
-            pixfmt: output.to_owned(),
-        })
+        Box::new(self.transform_inner(output))
     }
 
     fn dimensions(&self) -> (u16, u16) {
