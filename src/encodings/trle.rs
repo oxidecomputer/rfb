@@ -2,7 +2,7 @@ use std::iter::{from_fn, once};
 
 use crate::encodings::{Encoding, EncodingType};
 use crate::pixel_formats;
-use crate::rfb::PixelFormat;
+use crate::rfb::{ConnectionContext, PixelFormat};
 
 use super::RawEncodingRef;
 
@@ -32,7 +32,7 @@ impl Encoding for ZRLEncoding {
         self.0.pixel_format()
     }
 
-    fn encode(&self /*, ctx: &mut ConnectionContext*/) -> Box<dyn Iterator<Item = u8> + '_> {
+    fn encode(&self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
         todo!("flate2 with zlib stream shared with stream (but flushed to byte boundary at end of this fn)");
         todo!("also disable re-use of palettes in zrle mode")
     }
@@ -373,7 +373,7 @@ impl<const PX: usize> Encoding for RLEncoding<PX> {
         EncodingType::TRLE
     }
 
-    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
         Box::new(
             self.tiles
                 .iter()

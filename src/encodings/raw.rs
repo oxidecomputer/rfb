@@ -1,7 +1,7 @@
 use crate::{
     encodings::{Encoding, EncodingType},
     pixel_formats::transform,
-    rfb::PixelFormat,
+    rfb::{ConnectionContext, PixelFormat},
 };
 
 /// Section 7.7.1
@@ -62,7 +62,7 @@ impl Encoding for RawEncoding {
         &self.pixfmt
     }
 
-    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
         Box::new(self.pixels.iter().copied())
     }
 
@@ -112,7 +112,7 @@ impl<'a> Encoding for RawEncodingRef<'a> {
         &self.pixfmt
     }
 
-    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
         Box::new(self.pixels.iter().copied())
     }
 

@@ -20,9 +20,9 @@ use tokio::select;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::rfb::{
-    ClientInit, ClientMessage, FramebufferUpdate, KeyEvent, PixelFormat, PointerEvent,
-    ProtoVersion, ProtocolError, ReadMessage, SecurityResult, SecurityType, SecurityTypes,
-    ServerInit, WriteMessage,
+    ClientInit, ClientMessage, ConnectionContext, FramebufferUpdate, KeyEvent, PixelFormat,
+    PointerEvent, ProtoVersion, ProtocolError, ReadMessage, SecurityResult, SecurityType,
+    SecurityTypes, ServerInit, WriteMessage,
 };
 
 #[derive(Debug, Error)]
@@ -61,6 +61,8 @@ pub struct VncServerData {
     /// The pixel format of the framebuffer data passed in to the server via
     /// get_framebuffer_update.
     pub input_pixel_format: PixelFormat,
+    /// State used during encoding, such as the Zlib stream (which is shared between rectangles).
+    pub connection_context: ConnectionContext,
 }
 
 pub struct VncServer<S: Server> {
@@ -92,9 +94,9 @@ impl<S: Server> VncServer<S> {
             "at least one security type must be defined"
         );
         Arc::new(Self {
-            config: config,
+            config,
             data: Mutex::new(data),
-            server: server,
+            server,
             stop_ch: Mutex::new(None),
         })
     }

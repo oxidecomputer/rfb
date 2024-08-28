@@ -15,7 +15,8 @@ use rfb::encodings::{RawEncodingRef, ZRLEncoding};
 use rfb::pixel_formats::fourcc::FourCC;
 use rfb::pixel_formats::transform;
 use rfb::rfb::{
-    FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
+    ConnectionContext, FramebufferUpdate, KeyEvent, PixelFormat, ProtoVersion, Rectangle,
+    SecurityType, SecurityTypes,
 };
 use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -86,6 +87,7 @@ async fn main() -> Result<()> {
         width: WIDTH as u16,
         height: HEIGHT as u16,
         input_pixel_format: pixfmt.clone(),
+        connection_context: ConnectionContext::default(),
     };
     let server = ExampleServer {
         display: args.image,

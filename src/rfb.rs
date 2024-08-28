@@ -4,6 +4,8 @@
 //
 // Copyright 2022 Oxide Computer Company
 
+use std::iter::once;
+
 use bitflags::bitflags;
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -13,6 +15,17 @@ use tokio::net::TcpStream;
 
 use crate::encodings::{Encoding, EncodingType};
 use crate::keysym::KeySym;
+
+pub struct ConnectionContext {
+    pub zlib: flate2::Compress,
+}
+impl Default for ConnectionContext {
+    fn default() -> Self {
+        Self {
+            zlib: flate2::Compress::new(flate2::Compression::fast(), false),
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -42,6 +55,7 @@ pub trait ReadMessage {
 }
 
 pub trait WriteMessage {
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_>;
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>>;
 }
 
@@ -57,30 +71,47 @@ impl ReadMessage for ProtoVersion {
         async move {
             let mut buf = [0u8; 12];
             stream.read_exact(&mut buf).await?;
-
-            match &buf {
-                b"RFB 003.003\n" => Ok(ProtoVersion::Rfb33),
-                b"RFB 003.007\n" => Ok(ProtoVersion::Rfb37),
-                b"RFB 003.008\n" => Ok(ProtoVersion::Rfb38),
-                _ => Err(ProtocolError::InvalidProtocolVersion),
-            }
+            Self::try_from(buf)
         }
         .boxed()
+    }
+}
+
+impl TryFrom<[u8; 12]> for ProtoVersion {
+    type Error = ProtocolError;
+
+    fn try_from(buf: [u8; 12]) -> Result<Self, Self::Error> {
+        match &buf {
+            b"RFB 003.003\n" => Ok(ProtoVersion::Rfb33),
+            b"RFB 003.007\n" => Ok(ProtoVersion::Rfb37),
+            b"RFB 003.008\n" => Ok(ProtoVersion::Rfb38),
+            _ => Err(ProtocolError::InvalidProtocolVersion),
+        }
+    }
+}
+
+impl Into<&'static [u8; 12]> for ProtoVersion {
+    fn into(self) -> &'static [u8; 12] {
+        match self {
+            ProtoVersion::Rfb33 => b"RFB 003.003\n",
+            ProtoVersion::Rfb37 => b"RFB 003.007\n",
+            ProtoVersion::Rfb38 => b"RFB 003.008\n",
+        }
     }
 }
 
 impl WriteMessage for ProtoVersion {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
-            let s = match self {
-                ProtoVersion::Rfb33 => b"RFB 003.003\n",
-                ProtoVersion::Rfb37 => b"RFB 003.007\n",
-                ProtoVersion::Rfb38 => b"RFB 003.008\n",
-            };
-
+            let s: &[u8; 12] = self.into();
             Ok(stream.write_all(s).await?)
         }
         .boxed()
+    }
+
+    fn encode(self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        let s: &[u8; 12] = self.into();
+        Box::new(s.iter().copied())
     }
 }
 
@@ -89,9 +120,10 @@ impl WriteMessage for ProtoVersion {
 pub struct SecurityTypes(pub Vec<SecurityType>);
 
 #[derive(Clone, PartialEq, Debug)]
+#[repr(u8)]
 pub enum SecurityType {
-    None,
-    VncAuthentication,
+    None = 0,
+    VncAuthentication = 1,
 }
 
 impl WriteMessage for SecurityTypes {
@@ -106,6 +138,13 @@ impl WriteMessage for SecurityTypes {
             Ok(())
         }
         .boxed()
+    }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            once(self.0.len() as u8) // TODO: fix cast
+                .chain(self.0.into_iter().flat_map(|t| t.encode(ctx))),
+        )
     }
 }
 
@@ -126,15 +165,14 @@ impl ReadMessage for SecurityType {
 impl WriteMessage for SecurityType {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
-            let val = match self {
-                SecurityType::None => 0,
-                SecurityType::VncAuthentication => 1,
-            };
-            stream.write_u8(val).await?;
-
+            stream.write_u8(self as u8).await?;
             Ok(())
         }
         .boxed()
+    }
+
+    fn encode(self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(once(self as u8))
     }
 }
 
@@ -160,6 +198,15 @@ impl WriteMessage for SecurityResult {
             Ok(())
         }
         .boxed()
+    }
+
+    fn encode(self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        match self {
+            SecurityResult::Success => Box::new(0u32.to_be_bytes().iter().copied()),
+            SecurityResult::Failure(s) => {
+                Box::new(1u32.to_be_bytes().iter().copied().chain(s.bytes()))
+            }
+        }
     }
 }
 
@@ -214,6 +261,16 @@ impl WriteMessage for ServerInit {
         }
         .boxed()
     }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            self.initial_res
+                .encode(ctx)
+                .chain(self.pixel_format.encode(ctx))
+                .chain((self.name.len() as u32).to_be_bytes().iter().copied())
+                .chain(self.name.bytes()),
+        )
+    }
 }
 
 pub enum _ServerMessage {
@@ -233,12 +290,11 @@ impl FramebufferUpdate {
     }
 
     pub fn transform(&self, input_pf: &PixelFormat, output_pf: &PixelFormat) -> Self {
-        let mut rectangles = Vec::new();
-
-        for r in self.rectangles.iter() {
-            rectangles.push(r.transform(input_pf, output_pf));
-        }
-
+        let rectangles = self
+            .rectangles
+            .iter()
+            .map(|r| r.transform(input_pf, output_pf))
+            .collect();
         FramebufferUpdate { rectangles }
     }
 }
@@ -288,6 +344,16 @@ impl WriteMessage for Resolution {
         }
         .boxed()
     }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            self.width
+                .to_be_bytes()
+                .iter()
+                .copied()
+                .chain(self.height.to_be_bytes().iter().copied()),
+        )
+    }
 }
 
 pub struct Rectangle {
@@ -328,12 +394,26 @@ impl WriteMessage for Rectangle {
             stream.write_i32(encoding_type).await?;
 
             // TODO: avoid collect alloc?
-            let data: Vec<_> = self.data.encode().collect();
+            let data: Vec<_> = self.data.encode(todo!()).collect();
             stream.write_all(&data).await?;
 
             Ok(())
         }
         .boxed()
+    }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            self.position
+                .x
+                .to_be_bytes()
+                .into_iter()
+                .chain(self.position.y.to_be_bytes().into_iter())
+                .chain(self.dimensions.width.to_be_bytes().into_iter())
+                .chain(self.dimensions.height.to_be_bytes().into_iter())
+                .chain(i32::from(self.data.get_type()).to_be_bytes().into_iter())
+                .chain(self.data.encode(ctx)),
+        )
     }
 }
 
@@ -358,6 +438,17 @@ impl WriteMessage for FramebufferUpdate {
             Ok(())
         }
         .boxed()
+    }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        // number of rectangles
+        let n_rect = self.rectangles.len() as u16;
+        Box::new(
+            once(0u8) // TODO: type function?
+                .chain(once(0u8)) // 1 byte of padding
+                .chain(n_rect.to_be_bytes().into_iter())
+                .chain(self.rectangles.into_iter().flat_map(|r| r.encode(ctx))),
+        )
     }
 }
 
@@ -521,6 +612,15 @@ impl WriteMessage for PixelFormat {
         }
         .boxed()
     }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        Box::new(
+            [self.bits_per_pixel, self.depth, self.big_endian as u8]
+                .into_iter()
+                .chain(self.color_spec.encode(ctx))
+                .chain([0u8; 3].into_iter()), // 3 bytes of padding
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -601,6 +701,26 @@ impl WriteMessage for ColorSpecification {
             Ok(())
         }
         .boxed()
+    }
+
+    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+        match self {
+            ColorSpecification::ColorFormat(cf) => {
+                Box::new(
+                    once(1u8) // true color
+                        .chain(cf.red_max.to_be_bytes().into_iter())
+                        .chain(cf.green_max.to_be_bytes().into_iter())
+                        .chain(cf.blue_max.to_be_bytes().into_iter())
+                        .chain([cf.red_shift, cf.green_shift, cf.blue_shift].into_iter()),
+                )
+            }
+            ColorSpecification::ColorMap(_cm) => {
+                // first 0 byte is true-color-flag = false;
+                // the remaining 9 are the above max/shift fields,
+                // which aren't relevant in ColorMap mode
+                Box::new(std::iter::repeat(0).take(10))
+            }
+        }
     }
 }
 

@@ -4,15 +4,14 @@
 //
 // Copyright 2022 Oxide Computer Company
 
+use crate::rfb::ConnectionContext;
 use crate::rfb::PixelFormat;
 
 use EncodingType::*;
 
-#[allow(unused)]
-mod hextile;
+// mod hextile;
 mod raw;
-#[allow(unused)]
-mod rre;
+// mod rre;
 mod trle;
 mod zlib;
 
@@ -58,7 +57,7 @@ where
     fn pixel_format(&self) -> &PixelFormat;
 
     /// Transform this encoding from its representation into a byte sequence that can be passed to the client.
-    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_>;
+    fn encode(&self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_>;
 
     /// Translates this encoding type from its current pixel format to the given format.
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding>;
