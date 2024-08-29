@@ -14,6 +14,12 @@ pub struct ZlibEncodingRef<'a> {
     raw: RawEncodingRef<'a>,
 }
 
+impl<'a> From<RawEncodingRef<'a>> for ZlibEncodingRef<'a> {
+    fn from(raw: RawEncodingRef<'a>) -> Self {
+        Self { raw }
+    }
+}
+
 #[async_trait]
 impl<'a> Encoding for ZlibEncodingRef<'a> {
     fn get_type(&self) -> EncodingType {
@@ -53,6 +59,12 @@ impl<'a> Encoding for ZlibEncodingRef<'a> {
 
 pub struct ZlibEncoding {
     raw: RawEncoding,
+}
+
+impl From<RawEncoding> for ZlibEncoding {
+    fn from(raw: RawEncoding) -> Self {
+        Self { raw }
+    }
 }
 
 #[async_trait]

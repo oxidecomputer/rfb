@@ -10,14 +10,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cancel_safe_futures::sync::RobustMutex;
 use futures::future::Shared;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, trace};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 
 use crate::rfb::{
     ClientInit, ClientMessage, ConnectionContext, FramebufferUpdate, KeyEvent, PixelFormat,
@@ -43,6 +44,9 @@ pub enum HandshakeError {
 
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Immutable state
@@ -62,7 +66,7 @@ pub struct VncServerData {
     /// get_framebuffer_update.
     pub input_pixel_format: PixelFormat,
     /// State used during encoding, such as the Zlib stream (which is shared between rectangles).
-    pub connection_context: ConnectionContext,
+    pub connection_context: Arc<ConnectionContext>,
 }
 
 pub struct VncServer<S: Server> {
@@ -70,13 +74,13 @@ pub struct VncServer<S: Server> {
     config: VncServerConfig,
 
     /// VNC runtime mutable state
-    data: Mutex<VncServerData>,
+    data: Arc<RobustMutex<VncServerData>>,
 
     /// The underlying [`Server`] implementation
     pub server: S,
 
     /// One-shot channel used to signal that the server should shut down.
-    stop_ch: Mutex<Option<oneshot::Sender<()>>>,
+    stop_ch: RobustMutex<Option<oneshot::Sender<()>>>,
 }
 
 #[async_trait]
@@ -95,21 +99,33 @@ impl<S: Server> VncServer<S> {
         );
         Arc::new(Self {
             config,
-            data: Mutex::new(data),
+            data: Arc::new(RobustMutex::new(data)),
             server,
-            stop_ch: Mutex::new(None),
+            stop_ch: RobustMutex::new(None),
         })
     }
 
     pub async fn set_pixel_format(&self, pixel_format: PixelFormat) {
-        let mut locked = self.data.lock().await;
-        locked.input_pixel_format = pixel_format;
+        self.data
+            .lock()
+            .await
+            .unwrap()
+            .perform(move |locked| locked.input_pixel_format = pixel_format);
     }
 
     pub async fn set_resolution(&self, width: u16, height: u16) {
-        let mut locked = self.data.lock().await;
-        locked.width = width;
-        locked.height = height;
+        self.data.lock().await.unwrap().perform(move |locked| {
+            locked.width = width;
+            locked.height = height;
+        });
+    }
+
+    async fn get_ctx(&self) -> Arc<ConnectionContext> {
+        self.data
+            .lock()
+            .await
+            .unwrap()
+            .perform(|data| data.connection_context.to_owned())
     }
 
     async fn rfb_handshake(
@@ -119,7 +135,10 @@ impl<S: Server> VncServer<S> {
     ) -> Result<(), HandshakeError> {
         // ProtocolVersion handshake
         info!("Tx [{:?}]: ProtoVersion={:?}", addr, self.config.version);
-        self.config.version.write_to(s).await?;
+        let ctx = self.get_ctx().await;
+
+        self.config.version.write_to(s, ctx.to_owned()).await?;
+
         let client_version = ProtoVersion::read_from(s).await?;
         info!("Rx [{:?}]: ClientVersion={:?}", addr, client_version);
 
@@ -138,13 +157,14 @@ impl<S: Server> VncServer<S> {
         // Security Handshake
         let supported_types = self.config.sec_types.clone();
         info!("Tx [{:?}]: SecurityTypes={:?}", addr, supported_types);
-        supported_types.write_to(s).await?;
+        supported_types.write_to(s, ctx.to_owned()).await?;
+
         let client_choice = SecurityType::read_from(s).await?;
         info!("Rx [{:?}]: SecurityType Choice={:?}", addr, client_choice);
         if !self.config.sec_types.0.contains(&client_choice) {
             info!("Tx [{:?}]: SecurityResult=Failure", addr);
             let failure = SecurityResult::Failure("unsupported security type".to_string());
-            failure.write_to(s).await?;
+            failure.write_to(s, ctx).await?;
             let err_str = format!("invalid security choice={:?}", client_choice);
             error!("{}", err_str);
             return Err(HandshakeError::IncompatibleSecurityTypes {
@@ -155,7 +175,7 @@ impl<S: Server> VncServer<S> {
 
         let res = SecurityResult::Success;
         info!("Tx: SecurityResult=Success");
-        res.write_to(s).await?;
+        res.write_to(s, ctx).await?;
 
         Ok(())
     }
@@ -173,15 +193,17 @@ impl<S: Server> VncServer<S> {
             false => {}
         }
 
-        let data = self.data.lock().await;
-        let server_init = ServerInit::new(
-            data.width,
-            data.height,
-            self.config.name.clone(),
-            data.input_pixel_format.clone(),
-        );
+        let server_init = self.data.lock().await.unwrap().perform(|data| {
+            ServerInit::new(
+                data.width,
+                data.height,
+                self.config.name.clone(),
+                data.input_pixel_format.clone(),
+            )
+        });
+
         info!("Tx [{:?}]: ServerInit={:#?}", addr, server_init);
-        server_init.write_to(s).await?;
+        server_init.write_to(s, self.get_ctx().await).await?;
 
         Ok(())
     }
@@ -204,9 +226,12 @@ impl<S: Server> VncServer<S> {
             return;
         }
 
-        let data = self.data.lock().await;
-        let mut output_pixel_format = data.input_pixel_format.clone();
-        drop(data);
+        let mut output_pixel_format = self
+            .data
+            .lock()
+            .await
+            .unwrap()
+            .perform(|data| data.input_pixel_format.clone());
 
         loop {
             let req = select! {
@@ -238,29 +263,29 @@ impl<S: Server> VncServer<S> {
 
                         let mut fbu = self.server.get_framebuffer_update().await;
 
-                        let data = self.data.lock().await;
+                        self.data.lock().await.unwrap().perform(|data| {
+                            // We only need to change pixel formats if the client requested a different
+                            // one than what's specified in the input.
+                            //
+                            // For now, we only support transformations between 4-byte RGB formats, so
+                            // if the requested format isn't one of those, we'll just leave the pixels
+                            // as is.
+                            if data.input_pixel_format == output_pixel_format {
+                                debug!("no input transformation needed");
+                            } else if data.input_pixel_format.is_supported()
+                                && output_pixel_format.is_supported()
+                            {
+                                debug!(
+                                    "transforming: input={:#?}, output={:#?}",
+                                    data.input_pixel_format, output_pixel_format
+                                );
+                                fbu = fbu.transform(&data.input_pixel_format, &output_pixel_format);
+                            } else {
+                                debug!("cannot transform between pixel formats: input.is_supported()={}, output.is_supported()={}", data.input_pixel_format.is_supported(), output_pixel_format.is_supported());
+                            }
+                        });
 
-                        // We only need to change pixel formats if the client requested a different
-                        // one than what's specified in the input.
-                        //
-                        // For now, we only support transformations between 4-byte RGB formats, so
-                        // if the requested format isn't one of those, we'll just leave the pixels
-                        // as is.
-                        if data.input_pixel_format == output_pixel_format {
-                            debug!("no input transformation needed");
-                        } else if data.input_pixel_format.is_supported()
-                            && output_pixel_format.is_supported()
-                        {
-                            debug!(
-                                "transforming: input={:#?}, output={:#?}",
-                                data.input_pixel_format, output_pixel_format
-                            );
-                            fbu = fbu.transform(&data.input_pixel_format, &output_pixel_format);
-                        } else {
-                            debug!("cannot transform between pixel formats: input.is_supported()={}, output.is_supported()={}", data.input_pixel_format.is_supported(), output_pixel_format.is_supported());
-                        }
-
-                        if let Err(e) = fbu.write_to(s).await {
+                        if let Err(e) = fbu.write_to(s, self.get_ctx().await).await {
                             error!(
                                 "[{:?}] could not write FramebufferUpdateRequest: {:?}",
                                 addr, e
@@ -296,7 +321,12 @@ impl<S: Server> VncServer<S> {
         // Create a channel to signal the server to stop.
         let (close_tx, close_rx) = oneshot::channel();
         assert!(
-            self.stop_ch.lock().await.replace(close_tx).is_none(),
+            self.stop_ch
+                .lock()
+                .await
+                .unwrap()
+                .perform(|lock| lock.replace(close_tx))
+                .is_none(),
             "server already started"
         );
         let mut close_rx = close_rx.shared();
@@ -327,7 +357,13 @@ impl<S: Server> VncServer<S> {
 
     /// Stop the server (and disconnect any client) if it's running.
     pub async fn stop(self: &Arc<Self>) {
-        if let Some(close_tx) = self.stop_ch.lock().await.take() {
+        if let Some(close_tx) = self
+            .stop_ch
+            .lock()
+            .await
+            .unwrap()
+            .perform(|lock| lock.take())
+        {
             let _ = close_tx.send(());
         }
     }

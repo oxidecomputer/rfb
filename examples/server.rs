@@ -11,7 +11,7 @@ use env_logger;
 use image::io::Reader as ImageReader;
 use image::GenericImageView;
 use log::info;
-use rfb::encodings::{RawEncodingRef, ZRLEncoding};
+use rfb::encodings::{RawEncoding, RawEncodingRef, ZRLEncoding, ZlibEncoding, ZlibEncodingRef};
 use rfb::pixel_formats::fourcc::FourCC;
 use rfb::pixel_formats::transform;
 use rfb::rfb::{
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         width: WIDTH as u16,
         height: HEIGHT as u16,
         input_pixel_format: pixfmt.clone(),
-        connection_context: ConnectionContext::default(),
+        connection_context: ConnectionContext::default().into(),
     };
     let server = ExampleServer {
         display: args.image,
@@ -164,12 +164,13 @@ impl Server for ExampleServer {
             0,
             pixels_width,
             pixels_height,
-            Box::new(ZRLEncoding::from(&RawEncodingRef::new(
+            // TODO: untangle so we can ZlibEncodingRef...
+            Box::new(ZlibEncoding::from(RawEncoding::from(&RawEncodingRef::new(
                 &pixels,
                 pixels_width,
                 pixels_height,
                 &self.pixfmt,
-            ))),
+            )))),
         );
         FramebufferUpdate::new(vec![r])
     }

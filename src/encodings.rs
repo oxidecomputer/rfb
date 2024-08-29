@@ -21,9 +21,12 @@ mod zlib;
 
 pub use raw::RawEncoding;
 pub use raw::RawEncodingRef;
+
+pub use zlib::ZlibEncoding;
+pub use zlib::ZlibEncodingRef;
+
 pub use trle::TRLEncoding;
 pub use trle::ZRLEncoding;
-pub use zlib::ZlibEncoding;
 
 #[derive(Debug)]
 #[allow(unused)]

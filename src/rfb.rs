@@ -15,7 +15,7 @@ use futures::{
     FutureExt, StreamExt,
 };
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::encodings::{Encoding, EncodingType};
@@ -60,9 +60,18 @@ pub trait ReadMessage {
 }
 
 #[async_trait]
-pub trait WriteMessage {
+pub trait WriteMessage: Sized {
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8>;
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>>;
+    async fn write_to<'a, W: AsyncWrite + Unpin + Send>(
+        self,
+        writer: &'a mut W,
+        ctx: Arc<ConnectionContext>,
+    ) -> Result<(), ProtocolError> {
+        writer
+            .write_all(&self.encode(ctx).await.collect::<Vec<u8>>().await)
+            .await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd)]
@@ -108,13 +117,6 @@ impl Into<&'static [u8; 12]> for &ProtoVersion {
 
 #[async_trait]
 impl WriteMessage for ProtoVersion {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            let s: &[u8; 12] = (&self).into();
-            Ok(stream.write_all(s).await?)
-        }
-        .boxed()
-    }
     async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         let s: &[u8; 12] = self.into();
         stream::iter(s.iter().copied()).boxed()
@@ -134,18 +136,6 @@ pub enum SecurityType {
 
 #[async_trait]
 impl WriteMessage for SecurityTypes {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            // TODO: fix cast
-            stream.write_u8(self.0.len() as u8).await?;
-            for t in self.0.into_iter() {
-                t.write_to(stream).await?;
-            }
-
-            Ok(())
-        }
-        .boxed()
-    }
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         stream::iter([self.0.len() as u8].into_iter()) // TODO: fix cast
             .chain(
@@ -173,14 +163,6 @@ impl ReadMessage for SecurityType {
 
 #[async_trait]
 impl WriteMessage for SecurityType {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            stream.write_u8(self as u8).await?;
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         stream::iter([*self as u8].into_iter()).boxed()
     }
@@ -194,22 +176,6 @@ pub enum SecurityResult {
 
 #[async_trait]
 impl WriteMessage for SecurityResult {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            match self {
-                SecurityResult::Success => {
-                    stream.write_u32(0).await?;
-                }
-                SecurityResult::Failure(s) => {
-                    stream.write_u32(1).await?;
-                    stream.write_all(s.as_bytes()).await?;
-                }
-            };
-
-            Ok(())
-        }
-        .boxed()
-    }
     async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         match self {
             SecurityResult::Success => stream::iter(0u32.to_be_bytes().into_iter()).boxed(),
@@ -259,20 +225,6 @@ impl ServerInit {
 
 #[async_trait]
 impl WriteMessage for ServerInit {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            self.initial_res.write_to(stream).await?;
-            self.pixel_format.write_to(stream).await?;
-
-            // TODO: cast properly
-            stream.write_u32(self.name.len() as u32).await?;
-            stream.write_all(self.name.as_bytes()).await?;
-
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         self.initial_res
             .encode(ctx.clone())
@@ -352,15 +304,6 @@ impl ReadMessage for Resolution {
 
 #[async_trait]
 impl WriteMessage for Resolution {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            stream.write_u16(self.width).await?;
-            stream.write_u16(self.height).await?;
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         stream::iter(
             self.width
@@ -400,25 +343,6 @@ impl Rectangle {
 
 #[async_trait]
 impl WriteMessage for Rectangle {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            let encoding_type: i32 = self.data.get_type().into();
-
-            stream.write_u16(self.position.x).await?;
-            stream.write_u16(self.position.y).await?;
-            stream.write_u16(self.dimensions.width).await?;
-            stream.write_u16(self.dimensions.height).await?;
-            stream.write_i32(encoding_type).await?;
-
-            // TODO: avoid collect alloc?
-            let data: Vec<_> = self.data.encode(todo!()).await.collect().await;
-            stream.write_all(&data).await?;
-
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         stream::iter(
             self.position
@@ -437,28 +361,6 @@ impl WriteMessage for Rectangle {
 
 #[async_trait]
 impl WriteMessage for FramebufferUpdate {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            // TODO: type function?
-            stream.write_u8(0).await?;
-
-            // 1 byte of padding
-            stream.write_u8(0).await?;
-
-            // number of rectangles
-            let n_rect = self.rectangles.len() as u16;
-            stream.write_u16(n_rect).await?;
-
-            // rectangles
-            for r in self.rectangles.into_iter() {
-                r.write_to(stream).await?;
-            }
-
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         // number of rectangles
         let n_rect = self.rectangles.len() as u16;
@@ -622,21 +524,6 @@ impl ReadMessage for PixelFormat {
 
 #[async_trait]
 impl WriteMessage for PixelFormat {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            stream.write_u8(self.bits_per_pixel).await?;
-            stream.write_u8(self.depth).await?;
-            stream.write_u8(if self.big_endian { 1 } else { 0 }).await?;
-            self.color_spec.write_to(stream).await?;
-
-            // 3 bytes of padding
-            let buf = [0u8; 3];
-            stream.write_all(&buf).await?;
-
-            Ok(())
-        }
-        .boxed()
-    }
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         stream::iter([self.bits_per_pixel, self.depth, self.big_endian as u8].into_iter())
             .chain(self.color_spec.encode(ctx).await)
@@ -700,32 +587,6 @@ impl ReadMessage for ColorSpecification {
 
 #[async_trait]
 impl WriteMessage for ColorSpecification {
-    fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
-        async move {
-            match self {
-                ColorSpecification::ColorFormat(cf) => {
-                    stream.write_u8(1).await?; // true color
-                    stream.write_u16(cf.red_max).await?;
-                    stream.write_u16(cf.green_max).await?;
-                    stream.write_u16(cf.blue_max).await?;
-
-                    stream.write_u8(cf.red_shift).await?;
-                    stream.write_u8(cf.green_shift).await?;
-                    stream.write_u8(cf.blue_shift).await?;
-                }
-                ColorSpecification::ColorMap(_cm) => {
-                    // first 0 byte is true-color-flag = false;
-                    // the remaining 9 are the above max/shift fields,
-                    // which aren't relevant in ColorMap mode
-                    stream.write_all(&[0u8; 10]).await?;
-                }
-            };
-
-            Ok(())
-        }
-        .boxed()
-    }
-
     async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         match self {
             ColorSpecification::ColorFormat(cf) => {
