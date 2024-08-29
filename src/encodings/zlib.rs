@@ -41,7 +41,13 @@ impl<'a> Encoding for ZlibEncodingRef<'a> {
             zlib.compress_vec(in_buf, &mut out_buf, flate2::FlushCompress::Sync)
                 .expect("zlib error")
         });
-        stream::iter(out_buf.into_iter()).boxed()
+        stream::iter(
+            (out_buf.len() as u32)
+                .to_be_bytes()
+                .into_iter()
+                .chain(out_buf.into_iter()),
+        )
+        .boxed()
     }
 
     fn transform(&self, output: &crate::rfb::PixelFormat) -> Box<dyn Encoding> {
@@ -88,7 +94,13 @@ impl Encoding for ZlibEncoding {
             zlib.compress_vec(in_buf, &mut out_buf, flate2::FlushCompress::Sync)
                 .expect("zlib error")
         });
-        stream::iter(out_buf.into_iter()).boxed()
+        stream::iter(
+            (out_buf.len() as u32)
+                .to_be_bytes()
+                .into_iter()
+                .chain(out_buf.into_iter()),
+        )
+        .boxed()
     }
 
     fn transform(&self, output: &crate::rfb::PixelFormat) -> Box<dyn Encoding> {

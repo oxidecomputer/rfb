@@ -39,8 +39,26 @@ impl Encoding for ZRLEncoding {
     }
 
     async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
-        todo!("flate2 with zlib stream shared with stream (but flushed to byte boundary at end of this fn)");
-        todo!("also disable re-use of palettes in zrle mode")
+        let in_buf = self
+            .0
+            .encode(ctx.to_owned())
+            .await
+            .collect::<Vec<u8>>()
+            .await;
+        let out_buf = ctx.zlib.lock().await.unwrap().perform(|zlib| {
+            let mut out_buf = Vec::with_capacity(in_buf.len());
+            zlib.compress_vec(&in_buf, &mut out_buf, flate2::FlushCompress::Sync)
+                .expect("zlib error");
+            out_buf
+        });
+        stream::iter(
+            (out_buf.len() as u32)
+                .to_be_bytes()
+                .into_iter()
+                .chain(out_buf.into_iter()),
+        )
+        .boxed()
+        // todo!("also disable re-use of palettes in zrle mode")
     }
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
