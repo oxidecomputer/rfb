@@ -4,11 +4,16 @@
 //
 // Copyright 2022 Oxide Computer Company
 
-use std::iter::once;
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use bitflags::bitflags;
-use futures::future::BoxFuture;
-use futures::FutureExt;
+use cancel_safe_futures::sync::RobustMutex;
+use futures::{
+    future::BoxFuture,
+    stream::{self, BoxStream},
+    FutureExt, StreamExt,
+};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -17,12 +22,12 @@ use crate::encodings::{Encoding, EncodingType};
 use crate::keysym::KeySym;
 
 pub struct ConnectionContext {
-    pub zlib: flate2::Compress,
+    pub zlib: RobustMutex<flate2::Compress>,
 }
 impl Default for ConnectionContext {
     fn default() -> Self {
         Self {
-            zlib: flate2::Compress::new(flate2::Compression::fast(), false),
+            zlib: RobustMutex::new(flate2::Compress::new(flate2::Compression::fast(), false)),
         }
     }
 }
@@ -54,8 +59,9 @@ pub trait ReadMessage {
         Self: Sized;
 }
 
+#[async_trait]
 pub trait WriteMessage {
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_>;
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8>;
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>>;
 }
 
@@ -90,7 +96,7 @@ impl TryFrom<[u8; 12]> for ProtoVersion {
     }
 }
 
-impl Into<&'static [u8; 12]> for ProtoVersion {
+impl Into<&'static [u8; 12]> for &ProtoVersion {
     fn into(self) -> &'static [u8; 12] {
         match self {
             ProtoVersion::Rfb33 => b"RFB 003.003\n",
@@ -100,18 +106,18 @@ impl Into<&'static [u8; 12]> for ProtoVersion {
     }
 }
 
+#[async_trait]
 impl WriteMessage for ProtoVersion {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
-            let s: &[u8; 12] = self.into();
+            let s: &[u8; 12] = (&self).into();
             Ok(stream.write_all(s).await?)
         }
         .boxed()
     }
-
-    fn encode(self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         let s: &[u8; 12] = self.into();
-        Box::new(s.iter().copied())
+        stream::iter(s.iter().copied()).boxed()
     }
 }
 
@@ -119,13 +125,14 @@ impl WriteMessage for ProtoVersion {
 #[derive(Debug, Clone)]
 pub struct SecurityTypes(pub Vec<SecurityType>);
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 #[repr(u8)]
 pub enum SecurityType {
     None = 0,
     VncAuthentication = 1,
 }
 
+#[async_trait]
 impl WriteMessage for SecurityTypes {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -139,12 +146,14 @@ impl WriteMessage for SecurityTypes {
         }
         .boxed()
     }
-
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
-            once(self.0.len() as u8) // TODO: fix cast
-                .chain(self.0.into_iter().flat_map(|t| t.encode(ctx))),
-        )
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter([self.0.len() as u8].into_iter()) // TODO: fix cast
+            .chain(
+                stream::iter(self.0.iter())
+                    .then(move |t| t.encode(ctx.to_owned()))
+                    .flatten(),
+            )
+            .boxed()
     }
 }
 
@@ -162,6 +171,7 @@ impl ReadMessage for SecurityType {
     }
 }
 
+#[async_trait]
 impl WriteMessage for SecurityType {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -171,8 +181,8 @@ impl WriteMessage for SecurityType {
         .boxed()
     }
 
-    fn encode(self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(once(self as u8))
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter([*self as u8].into_iter()).boxed()
     }
 }
 
@@ -182,6 +192,7 @@ pub enum SecurityResult {
     Failure(String),
 }
 
+#[async_trait]
 impl WriteMessage for SecurityResult {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -199,12 +210,11 @@ impl WriteMessage for SecurityResult {
         }
         .boxed()
     }
-
-    fn encode(self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         match self {
-            SecurityResult::Success => Box::new(0u32.to_be_bytes().iter().copied()),
+            SecurityResult::Success => stream::iter(0u32.to_be_bytes().into_iter()).boxed(),
             SecurityResult::Failure(s) => {
-                Box::new(1u32.to_be_bytes().iter().copied().chain(s.bytes()))
+                stream::iter(1u32.to_be_bytes().into_iter().chain(s.bytes())).boxed()
             }
         }
     }
@@ -247,6 +257,7 @@ impl ServerInit {
     }
 }
 
+#[async_trait]
 impl WriteMessage for ServerInit {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -262,14 +273,18 @@ impl WriteMessage for ServerInit {
         .boxed()
     }
 
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
-            self.initial_res
-                .encode(ctx)
-                .chain(self.pixel_format.encode(ctx))
-                .chain((self.name.len() as u32).to_be_bytes().iter().copied())
-                .chain(self.name.bytes()),
-        )
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        self.initial_res
+            .encode(ctx.clone())
+            .await
+            .chain(self.pixel_format.encode(ctx).await)
+            .chain(stream::iter(
+                (self.name.len() as u32)
+                    .to_be_bytes()
+                    .into_iter()
+                    .chain(self.name.bytes()),
+            ))
+            .boxed()
     }
 }
 
@@ -335,6 +350,7 @@ impl ReadMessage for Resolution {
     }
 }
 
+#[async_trait]
 impl WriteMessage for Resolution {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -345,14 +361,14 @@ impl WriteMessage for Resolution {
         .boxed()
     }
 
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter(
             self.width
                 .to_be_bytes()
-                .iter()
-                .copied()
-                .chain(self.height.to_be_bytes().iter().copied()),
+                .into_iter()
+                .chain(self.height.to_be_bytes().into_iter()),
         )
+        .boxed()
     }
 }
 
@@ -382,6 +398,7 @@ impl Rectangle {
     }
 }
 
+#[async_trait]
 impl WriteMessage for Rectangle {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -394,7 +411,7 @@ impl WriteMessage for Rectangle {
             stream.write_i32(encoding_type).await?;
 
             // TODO: avoid collect alloc?
-            let data: Vec<_> = self.data.encode(todo!()).collect();
+            let data: Vec<_> = self.data.encode(todo!()).await.collect().await;
             stream.write_all(&data).await?;
 
             Ok(())
@@ -402,8 +419,8 @@ impl WriteMessage for Rectangle {
         .boxed()
     }
 
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter(
             self.position
                 .x
                 .to_be_bytes()
@@ -411,12 +428,14 @@ impl WriteMessage for Rectangle {
                 .chain(self.position.y.to_be_bytes().into_iter())
                 .chain(self.dimensions.width.to_be_bytes().into_iter())
                 .chain(self.dimensions.height.to_be_bytes().into_iter())
-                .chain(i32::from(self.data.get_type()).to_be_bytes().into_iter())
-                .chain(self.data.encode(ctx)),
+                .chain(i32::from(self.data.get_type()).to_be_bytes().into_iter()),
         )
+        .chain(self.data.encode(ctx.clone()).await)
+        .boxed()
     }
 }
 
+#[async_trait]
 impl WriteMessage for FramebufferUpdate {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -440,15 +459,20 @@ impl WriteMessage for FramebufferUpdate {
         .boxed()
     }
 
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         // number of rectangles
         let n_rect = self.rectangles.len() as u16;
-        Box::new(
-            once(0u8) // TODO: type function?
-                .chain(once(0u8)) // 1 byte of padding
-                .chain(n_rect.to_be_bytes().into_iter())
-                .chain(self.rectangles.into_iter().flat_map(|r| r.encode(ctx))),
+        stream::iter(
+            std::iter::once(0u8) // TODO: type function?
+                .chain(std::iter::once(0u8)) // 1 byte of padding
+                .chain(n_rect.to_be_bytes().into_iter()),
         )
+        .chain(
+            stream::iter(self.rectangles.iter())
+                .then(move |r| r.encode(ctx.clone()))
+                .flatten(),
+        )
+        .boxed()
     }
 }
 
@@ -596,6 +620,7 @@ impl ReadMessage for PixelFormat {
     }
 }
 
+#[async_trait]
 impl WriteMessage for PixelFormat {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -612,14 +637,11 @@ impl WriteMessage for PixelFormat {
         }
         .boxed()
     }
-
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
-            [self.bits_per_pixel, self.depth, self.big_endian as u8]
-                .into_iter()
-                .chain(self.color_spec.encode(ctx))
-                .chain([0u8; 3].into_iter()), // 3 bytes of padding
-        )
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter([self.bits_per_pixel, self.depth, self.big_endian as u8].into_iter())
+            .chain(self.color_spec.encode(ctx).await)
+            .chain(stream::iter([0u8; 3].into_iter())) // 3 bytes of padding
+            .boxed()
     }
 }
 
@@ -676,6 +698,7 @@ impl ReadMessage for ColorSpecification {
     }
 }
 
+#[async_trait]
 impl WriteMessage for ColorSpecification {
     fn write_to<'a>(self, stream: &'a mut TcpStream) -> BoxFuture<'a, Result<(), ProtocolError>> {
         async move {
@@ -703,22 +726,23 @@ impl WriteMessage for ColorSpecification {
         .boxed()
     }
 
-    fn encode(self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         match self {
             ColorSpecification::ColorFormat(cf) => {
-                Box::new(
-                    once(1u8) // true color
+                stream::iter(
+                    std::iter::once(1u8) // true color
                         .chain(cf.red_max.to_be_bytes().into_iter())
                         .chain(cf.green_max.to_be_bytes().into_iter())
                         .chain(cf.blue_max.to_be_bytes().into_iter())
                         .chain([cf.red_shift, cf.green_shift, cf.blue_shift].into_iter()),
                 )
+                .boxed()
             }
             ColorSpecification::ColorMap(_cm) => {
                 // first 0 byte is true-color-flag = false;
                 // the remaining 9 are the above max/shift fields,
                 // which aren't relevant in ColorMap mode
-                Box::new(std::iter::repeat(0).take(10))
+                stream::iter(std::iter::repeat(0).take(10)).boxed()
             }
         }
     }

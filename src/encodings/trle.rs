@@ -1,4 +1,9 @@
 use std::iter::{from_fn, once};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::stream::{self, BoxStream};
+use futures::StreamExt;
 
 use crate::encodings::{Encoding, EncodingType};
 use crate::pixel_formats;
@@ -19,6 +24,7 @@ const ZRLE_TILE_PX_SIZE: usize = 64;
 pub type TRLEncoding = RLEncoding<TRLE_TILE_PX_SIZE>;
 pub struct ZRLEncoding(RLEncoding<ZRLE_TILE_PX_SIZE>);
 
+#[async_trait]
 impl Encoding for ZRLEncoding {
     fn get_type(&self) -> EncodingType {
         EncodingType::ZRLE
@@ -32,7 +38,7 @@ impl Encoding for ZRLEncoding {
         self.0.pixel_format()
     }
 
-    fn encode(&self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         todo!("flate2 with zlib stream shared with stream (but flushed to byte boundary at end of this fn)");
         todo!("also disable re-use of palettes in zrle mode")
     }
@@ -234,7 +240,7 @@ enum TRLETile {
     },
 }
 
-fn rle(mut length: usize) -> impl Iterator<Item = u8> {
+fn rle(mut length: usize) -> impl Iterator<Item = u8> + Send {
     from_fn(move || {
         if length == 0 {
             None
@@ -249,7 +255,7 @@ fn rle(mut length: usize) -> impl Iterator<Item = u8> {
     })
 }
 
-fn pal_rle((index, length): &(u8, usize)) -> Box<dyn Iterator<Item = u8>> {
+fn pal_rle((index, length): &(u8, usize)) -> Box<dyn Iterator<Item = u8> + Send> {
     if *length == 1 {
         Box::new(once(*index))
     } else {
@@ -261,7 +267,7 @@ impl TRLETile {
     /// Subencoding of the tile according to RFB 6143 7.7.5.
     /// To the extent possible, this function is a translation of that
     /// section of the RFB RFC from English into chained iterators.
-    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
+    fn encode(&self) -> Box<dyn Iterator<Item = u8> + Send + '_> {
         match self {
             TRLETile::Raw { pixels } => {
                 Box::new(once(0u8).chain(pixels.iter().flat_map(|c| c.bytes.iter().copied())))
@@ -368,17 +374,19 @@ impl CPixel {
     }
 }
 
+#[async_trait]
 impl<const PX: usize> Encoding for RLEncoding<PX> {
     fn get_type(&self) -> EncodingType {
         EncodingType::TRLE
     }
 
-    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter(
             self.tiles
                 .iter()
                 .flat_map(|row| row.iter().flat_map(|tile| tile.encode())),
         )
+        .boxed()
     }
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {

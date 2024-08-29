@@ -1,3 +1,11 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::{
+    stream::{self, BoxStream},
+    StreamExt,
+};
+
 use crate::{
     encodings::{Encoding, EncodingType},
     pixel_formats::transform,
@@ -49,6 +57,7 @@ impl<'a> From<&'a RawEncoding> for RawEncodingRef<'a> {
     }
 }
 
+#[async_trait]
 impl Encoding for RawEncoding {
     fn get_type(&self) -> EncodingType {
         EncodingType::Raw
@@ -62,8 +71,8 @@ impl Encoding for RawEncoding {
         &self.pixfmt
     }
 
-    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(self.pixels.iter().copied())
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter(self.pixels.iter().copied()).boxed()
     }
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {
@@ -99,6 +108,7 @@ impl<'a> RawEncodingRef<'a> {
     }
 }
 
+#[async_trait]
 impl<'a> Encoding for RawEncodingRef<'a> {
     fn get_type(&self) -> EncodingType {
         EncodingType::Raw
@@ -112,8 +122,8 @@ impl<'a> Encoding for RawEncodingRef<'a> {
         &self.pixfmt
     }
 
-    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(self.pixels.iter().copied())
+    async fn encode(&self, _ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
+        stream::iter(self.pixels.iter().copied()).boxed()
     }
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {

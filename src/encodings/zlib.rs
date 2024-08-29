@@ -1,3 +1,11 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::{
+    stream::{self, BoxStream},
+    StreamExt,
+};
+
 use crate::{pixel_formats::transform, rfb::ConnectionContext};
 
 use super::{Encoding, EncodingType, RawEncoding, RawEncodingRef};
@@ -6,6 +14,7 @@ pub struct ZlibEncodingRef<'a> {
     raw: RawEncodingRef<'a>,
 }
 
+#[async_trait]
 impl<'a> Encoding for ZlibEncodingRef<'a> {
     fn get_type(&self) -> EncodingType {
         EncodingType::Zlib
@@ -19,13 +28,14 @@ impl<'a> Encoding for ZlibEncodingRef<'a> {
         self.raw.pixel_format()
     }
 
-    fn encode(&self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         let in_buf = self.raw.raw_buffer();
         let mut out_buf = Vec::with_capacity(in_buf.len());
-        ctx.zlib
-            .compress_vec(in_buf, &mut out_buf, flate2::FlushCompress::Sync)
-            .expect("zlib error");
-        Box::new(out_buf.into_iter())
+        ctx.zlib.lock().await.unwrap().perform(|zlib| {
+            zlib.compress_vec(in_buf, &mut out_buf, flate2::FlushCompress::Sync)
+                .expect("zlib error")
+        });
+        stream::iter(out_buf.into_iter()).boxed()
     }
 
     fn transform(&self, output: &crate::rfb::PixelFormat) -> Box<dyn Encoding> {
@@ -45,6 +55,7 @@ pub struct ZlibEncoding {
     raw: RawEncoding,
 }
 
+#[async_trait]
 impl Encoding for ZlibEncoding {
     fn get_type(&self) -> EncodingType {
         EncodingType::Zlib
@@ -58,13 +69,14 @@ impl Encoding for ZlibEncoding {
         self.raw.pixel_format()
     }
 
-    fn encode(&self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8> {
         let in_buf = self.raw.raw_buffer();
         let mut out_buf = Vec::with_capacity(in_buf.len());
-        ctx.zlib
-            .compress_vec(in_buf, &mut out_buf, flate2::FlushCompress::Sync)
-            .expect("zlib error");
-        Box::new(out_buf.into_iter())
+        ctx.zlib.lock().await.unwrap().perform(|zlib| {
+            zlib.compress_vec(in_buf, &mut out_buf, flate2::FlushCompress::Sync)
+                .expect("zlib error")
+        });
+        stream::iter(out_buf.into_iter()).boxed()
     }
 
     fn transform(&self, output: &crate::rfb::PixelFormat) -> Box<dyn Encoding> {

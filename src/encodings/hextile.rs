@@ -41,7 +41,7 @@ impl Encoding for HextileEncoding {
         EncodingType::Hextile
     }
 
-    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_> {
+    fn encode(&self, _ctx: &mut ConnectionContext) -> Box<dyn Stream<Item = u8> + '_> {
         Box::new(self.tiles.iter().flat_map(|tile| {
             let subencoding_mask = todo!();
             [todo!()].into_iter()

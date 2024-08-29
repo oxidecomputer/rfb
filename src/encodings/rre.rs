@@ -25,8 +25,8 @@ impl Encoding for RREncoding {
         EncodingType::RRE
     }
 
-    fn encode(&self) -> Box<dyn Iterator<Item = u8> + '_> {
-        Box::new(
+    fn encode(&self) -> Box<dyn Stream<Item = u8> + '_> {
+        Box::new(stream::iter(
             (self.sub_rectangles.len() as u32)
                 .to_be_bytes()
                 .into_iter()
@@ -41,7 +41,7 @@ impl Encoding for RREncoding {
                         .chain(sr.dimensions.width.to_be_bytes().into_iter())
                         .chain(sr.dimensions.height.to_be_bytes().into_iter())
                 })),
-        )
+        ))
     }
 
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding> {

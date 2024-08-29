@@ -4,9 +4,13 @@
 //
 // Copyright 2022 Oxide Computer Company
 
+use std::sync::Arc;
+
 use crate::rfb::ConnectionContext;
 use crate::rfb::PixelFormat;
 
+use async_trait::async_trait;
+use futures::stream::BoxStream;
 use EncodingType::*;
 
 // mod hextile;
@@ -44,10 +48,8 @@ struct Pixel {
     bytes: Vec<u8>,
 }
 
-pub trait Encoding
-where
-    Self: Send,
-{
+#[async_trait]
+pub trait Encoding: Send + Sync {
     fn get_type(&self) -> EncodingType;
 
     /// Return the width and height in pixels of the encoded screen region.
@@ -57,7 +59,7 @@ where
     fn pixel_format(&self) -> &PixelFormat;
 
     /// Transform this encoding from its representation into a byte sequence that can be passed to the client.
-    fn encode(&self, ctx: &mut ConnectionContext) -> Box<dyn Iterator<Item = u8> + '_>;
+    async fn encode(&self, ctx: Arc<ConnectionContext>) -> BoxStream<u8>;
 
     /// Translates this encoding type from its current pixel format to the given format.
     fn transform(&self, output: &PixelFormat) -> Box<dyn Encoding>;
