@@ -245,9 +245,9 @@ impl FramebufferUpdate {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct Position {
-    x: u16,
-    y: u16,
+pub struct Position {
+    pub x: u16,
+    pub y: u16,
 }
 
 impl ReadMessage for Position {
@@ -264,8 +264,8 @@ impl ReadMessage for Position {
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Resolution {
-    width: u16,
-    height: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 impl ReadMessage for Resolution {
@@ -701,8 +701,8 @@ impl KeyEvent {
 }
 
 bitflags! {
-    #[derive(Debug)]
-    struct MouseButtons: u8 {
+    #[derive(Debug, Copy, Clone)]
+    pub struct MouseButtons: u8 {
         const LEFT = 1 << 0;
         const MIDDLE = 1 << 1;
         const RIGHT = 1 << 2;
@@ -718,6 +718,15 @@ bitflags! {
 pub struct PointerEvent {
     position: Position,
     pressed: MouseButtons,
+}
+
+impl PointerEvent {
+    pub fn position(&self) -> Position {
+        self.position
+    }
+    pub fn pressed(&self) -> MouseButtons {
+        self.pressed
+    }
 }
 
 impl ReadMessage for PointerEvent {
