@@ -2,10 +2,8 @@
 name = "rfb"
 version = "0.1.0"
 description = "Implementation of the RFB protocol (RFC 6143), including a server implementation."
-repository = "https://github.com/oxidecomputer/rfb"
+repository = "https://github.com/lukeweston1234/rfb"
 readme = "README.md"
-authors = ["Jordan Paige Hendricks <jordan@oxide.computer"]
-license = "MPL-2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
